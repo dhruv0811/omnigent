@@ -17,8 +17,8 @@ gives this PR the issue's priority in the review queue. If an older, still-open
 community PR already closes the same issue, the newer one may be auto-closed as
 a duplicate (maintainer PRs are exempt).
 
-No associated issue? Either check `Refactor / chore`, `Docs`, or `Test / CI`
-under *Type of change* below, or replace the line below with `no-issue`.
+If this is either a `Refactor / chore`, `Docs`, or `Test / CI` *Type of change* 
+below, then no issue is required to be associated. 
 -->
 
 Closes #

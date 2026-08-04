@@ -12,6 +12,7 @@ function pr({
   body = "",
   title = "feat: thing",
   author = "ext",
+  assoc = "CONTRIBUTOR",
   bot = false,
   draft = false,
   additions = 100,
@@ -24,6 +25,7 @@ function pr({
     isDraft: draft,
     additions,
     deletions,
+    authorAssociation: assoc,
     author: { login: author, __typename: bot ? "Bot" : "User" },
     labels: { nodes: labels.map((name) => ({ name })) },
     body,
@@ -32,11 +34,12 @@ function pr({
 
 // Run the script over PR nodes. `linked` maps PR number -> closing-issue count.
 // `env` overrides process.env for the run.
-async function run(nodes, { linked = {}, env = {}, linkError = false } = {}) {
+async function run(nodes, { linked = {}, env = {}, linkError = false, maintainers = [] } = {}) {
   const commented = [];
   const labeled = [];
   let searchCalls = 0;
   const github = {
+    repos: {},
     graphql: async (query, vars) => {
       if (query.includes("pullRequest(number:")) {
         if (linkError) throw new Error("boom");
@@ -58,6 +61,11 @@ async function run(nodes, { linked = {}, env = {}, linkError = false } = {}) {
       };
     },
     rest: {
+      repos: {
+        getContent: async () => ({
+          data: { content: Buffer.from(maintainers.join("\n"), "utf8").toString("base64") },
+        }),
+      },
       issues: {
         createLabel: async () => {},
         createComment: async ({ issue_number, body }) => commented.push({ issue_number, body }),
@@ -86,6 +94,27 @@ const { exemptReason } = script;
 assert.strictEqual(exemptReason(pr({ number: 1 })), null, "plain unlinked PR is not exempt");
 assert.strictEqual(exemptReason(pr({ number: 2, bot: true })), "bot");
 assert.strictEqual(exemptReason(pr({ number: 3, draft: true })), "draft");
+
+// Maintainers are exempt via EITHER signal. Both are needed: a maintainer with
+// private org membership reads as CONTRIBUTOR, and a maintainer with write
+// access may not be listed in .github/MAINTAINER.
+for (const assoc of ["MEMBER", "OWNER", "COLLABORATOR"]) {
+  assert.strictEqual(
+    exemptReason(pr({ number: 30, assoc })),
+    "maintainer",
+    `${assoc} is exempt by association`
+  );
+}
+assert.strictEqual(
+  exemptReason(pr({ number: 31, author: "Maintainer-Person", assoc: "CONTRIBUTOR" }), new Set(["maintainer-person"])),
+  "maintainer",
+  "MAINTAINER file catches a private-membership maintainer (case-insensitive)"
+);
+assert.strictEqual(
+  exemptReason(pr({ number: 32, author: "outsider" }), new Set(["maintainer-person"])),
+  null,
+  "a non-maintainer is still enforced"
+);
 assert.strictEqual(
   exemptReason(pr({ number: 4, labels: ["skip-issue-check"] })),
   "skip-issue-check label"
@@ -183,6 +212,31 @@ assert.strictEqual(
     const nodes = [25, 26, 27].map((number) => pr({ number }));
     const { commented } = await run(nodes, { env: { ...ENFORCE, LIMIT: "2" } });
     assert.strictEqual(commented.length, 2, "LIMIT caps flags per run");
+  }
+
+  // Maintainer PRs are never commented on, by either signal.
+  {
+    const { commented } = await run(
+      [
+        pr({ number: 28, assoc: "MEMBER" }),
+        pr({ number: 29, author: "listed-maintainer" }),
+        pr({ number: 30, author: "outsider" }),
+      ],
+      { env: ENFORCE, maintainers: ["listed-maintainer", "# a comment"] }
+    );
+    assert.deepStrictEqual(
+      commented.map((c) => c.issue_number),
+      [30],
+      "only the non-maintainer is commented on"
+    );
+  }
+
+  // A missing MAINTAINER file must not crash the run (association still applies).
+  {
+    const github_err = { env: ENFORCE };
+    const { commented, warnings } = await run([pr({ number: 31, assoc: "MEMBER" })], github_err);
+    assert.strictEqual(commented.length, 0, "MEMBER stays exempt without the file");
+    assert.ok(!warnings.some((w) => /throw/i.test(w)));
   }
 
   console.log("pr-issue-link.test.js: all assertions passed");

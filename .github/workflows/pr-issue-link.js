@@ -21,9 +21,9 @@
 //   - `no-issue` on a line of its own in the body (an escape hatch a first-time
 //     contributor can use; they cannot apply labels)
 //   - `skip-issue-check` label (maintainer override)
-//
-// Maintainer PRs are flagged too: the label is advisory while nothing closes,
-// and maintainer PRs are the majority of unlinked ones.
+//   - maintainers, by authorAssociation OR the .github/MAINTAINER file. Both are
+//     needed: a maintainer whose org membership is private reads as CONTRIBUTOR,
+//     and a maintainer may hold write access without being listed in the file.
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 const HOURS_TO_SCAN = 24;
@@ -31,6 +31,8 @@ const LABEL = "missing-issue-link";
 const OVERRIDE_LABEL = "skip-issue-check";
 // Same threshold pr-size.js uses for size/XS.
 const TRIVIAL_LINES = 9;
+
+const MAINTAINER_ASSOCIATIONS = ["MEMBER", "OWNER", "COLLABORATOR"];
 
 // Change types that describe work with no user-visible behaviour, and so no
 // tracking issue. Must match the "Type of change" boxes in
@@ -51,6 +53,7 @@ const QUERY = `
           isDraft
           additions
           deletions
+          authorAssociation
           author { login __typename }
           labels(first: 30) { nodes { name } }
           body
@@ -79,12 +82,15 @@ function isBot(pr) {
 }
 
 // Returns the reason this PR is exempt, or null when the rule applies.
+// `maintainers` is the lowercased login set from .github/MAINTAINER.
 // Order matters only for which reason gets reported.
-function exemptReason(pr) {
+function exemptReason(pr, maintainers = new Set()) {
   const body = pr.body ?? "";
   const labels = pr.labels?.nodes?.map((l) => l.name) ?? [];
   if (isBot(pr)) return "bot";
   if (pr.isDraft) return "draft";
+  if (MAINTAINER_ASSOCIATIONS.includes(pr.authorAssociation)) return "maintainer";
+  if (maintainers.has((pr.author?.login ?? "").toLowerCase())) return "maintainer";
   if (labels.includes(OVERRIDE_LABEL)) return `${OVERRIDE_LABEL} label`;
   if (DECLARED_EXEMPT_TYPE.test(body)) return "declared chore/docs/test";
   if ((pr.additions ?? 0) + (pr.deletions ?? 0) <= TRIVIAL_LINES) return "trivial";
@@ -112,6 +118,26 @@ module.exports = async ({ context, github, core }) => {
   const limit = Number(process.env.LIMIT || 0) || Infinity;
 
   try {
+    // Load maintainers from the API, not the checked-out tree, so a PR can't
+    // self-grant by editing the file (same approach as demo-check.js).
+    const maintainers = new Set();
+    try {
+      const resp = await github.rest.repos.getContent({
+        owner,
+        repo,
+        path: ".github/MAINTAINER",
+        ref: "main",
+      });
+      Buffer.from(resp.data.content, "base64")
+        .toString("utf8")
+        .split("\n")
+        .map((l) => l.replace(/#.*$/, "").trim().toLowerCase())
+        .filter(Boolean)
+        .forEach((m) => maintainers.add(m));
+    } catch (err) {
+      core.warning(`Could not load .github/MAINTAINER: ${err.message}`);
+    }
+
     if (enforce) {
       try {
         await github.rest.issues.createLabel({
@@ -159,7 +185,7 @@ module.exports = async ({ context, github, core }) => {
         continue;
       }
 
-      const exempt = exemptReason(pr);
+      const exempt = exemptReason(pr, maintainers);
       if (exempt) {
         verdicts.push({ pr: pr.number, verdict: "exempt", reason: exempt });
         continue;

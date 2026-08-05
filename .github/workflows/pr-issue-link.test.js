@@ -37,10 +37,12 @@ function pr({
 async function run(nodes, { linked = {}, env = {}, linkError = false, maintainers = [] } = {}) {
   const commented = [];
   const labeled = [];
+  const queries = [];
   let searchCalls = 0;
   const github = {
     repos: {},
     graphql: async (query, vars) => {
+      if (vars.searchQuery) queries.push(vars.searchQuery);
       if (query.includes("pullRequest(number:")) {
         if (linkError) throw new Error("boom");
         return {
@@ -74,7 +76,19 @@ async function run(nodes, { linked = {}, env = {}, linkError = false, maintainer
     },
   };
   const warnings = [];
-  const core = { warning: (m) => warnings.push(m), summary: null };
+  // Capture the step-summary table rows so the dry-run verdict list can be
+  // asserted on (the rows are `[#N, verdict, reason]` after the header).
+  const rows = [];
+  const summary = {
+    addHeading: () => summary,
+    addRaw: () => summary,
+    addTable: (table) => {
+      rows.push(...table.slice(1));
+      return summary;
+    },
+    write: async () => {},
+  };
+  const core = { warning: (m) => warnings.push(m), summary };
   const saved = { ...process.env };
   Object.assign(process.env, env);
   try {
@@ -83,7 +97,7 @@ async function run(nodes, { linked = {}, env = {}, linkError = false, maintainer
     for (const k of Object.keys(env)) delete process.env[k];
     Object.assign(process.env, saved);
   }
-  return { commented, labeled, warnings };
+  return { commented, labeled, warnings, rows, queries };
 }
 
 const ENFORCE = { ENFORCE: "true" };
@@ -161,9 +175,28 @@ assert.strictEqual(
   null,
   "a declared Bug fix is not exempt"
 );
+// Ticking an exempt box alongside a tracked one must not buy an opt-out.
+for (const tracked of ["Bug fix", "Feature", "UI / frontend change"]) {
+  assert.strictEqual(
+    exemptReason(
+      pr({ number: 13, body: `## Type of change\n\n- [x] ${tracked}\n- [x] Test / CI\n` })
+    ),
+    null,
+    `${tracked} + Test / CI is not exempt`
+  );
+}
 
 // ---- end-to-end behaviour ----
 (async () => {
+  // Forward-only: the search must never reach past the effective date, so the
+  // pre-existing backlog can't be flagged.
+  {
+    const { queries } = await run([pr({ number: 19 })]);
+    const floor = new Date(script.EFFECTIVE_FROM).getTime();
+    const asked = new Date(/created:>(\S+)/.exec(queries[0])[1]).getTime();
+    assert.ok(asked >= floor, "scan cutoff never predates the effective date");
+  }
+
   // Dry run (the default) must not comment or label.
   {
     const { commented, labeled } = await run([pr({ number: 20 })]);
@@ -210,8 +243,31 @@ assert.strictEqual(
   // LIMIT caps how many PRs a single run touches.
   {
     const nodes = [25, 26, 27].map((number) => pr({ number }));
-    const { commented } = await run(nodes, { env: { ...ENFORCE, LIMIT: "2" } });
+    const { commented, rows } = await run(nodes, { env: { ...ENFORCE, LIMIT: "2" } });
     assert.strictEqual(commented.length, 2, "LIMIT caps flags per run");
+    assert.ok(
+      rows.some((r) => r[1] === "deferred"),
+      "the PR past the cap is reported as deferred"
+    );
+  }
+
+  // LIMIT must NOT truncate a dry run: reviewing the full list before enabling
+  // is the entire point of the dry run.
+  {
+    const nodes = [40, 41, 42].map((number) => pr({ number }));
+    const { commented, rows } = await run(nodes, { env: { LIMIT: "1" } });
+    assert.strictEqual(commented.length, 0, "dry run still touches nothing");
+    assert.strictEqual(
+      rows.filter((r) => r[1] === "FLAG").length,
+      3,
+      "dry run enumerates every flaggable PR regardless of LIMIT"
+    );
+  }
+
+  // An explicit LIMIT=0 means flag nothing (not unlimited).
+  {
+    const { commented } = await run([pr({ number: 43 })], { env: { ...ENFORCE, LIMIT: "0" } });
+    assert.strictEqual(commented.length, 0, "LIMIT=0 flags nothing");
   }
 
   // Maintainer PRs are never commented on, by either signal.

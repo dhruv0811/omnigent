@@ -5,6 +5,9 @@
 // runs. Nothing is ever closed -- the label is the signal a future merge gate or
 // closer can read (Prow's model: plugins label, only the merge queue blocks).
 //
+// Forward-only: nothing opened before EFFECTIVE_FROM is ever considered, so the
+// existing backlog is untouched no matter how the scan window is set.
+//
 // ENFORCE=false (the default) is a dry run: it resolves every verdict and writes
 // them to the step summary without commenting or labeling.
 //
@@ -12,11 +15,13 @@
 //   - bots (release automation can't file issues; our CI bots author as
 //     CONTRIBUTOR, not MEMBER, so association checks miss them)
 //   - drafts
-//   - an affirmatively checked `Refactor / chore`, `Docs`, or `Test / CI` box.
-//     Note this requires a DECLARATION: an empty or deleted template does NOT
-//     exempt, or removing the template would become the way to skip the rule.
-//   - trivial changes (<= 9 changed lines, the same threshold pr-size.js uses
-//     for size/XS) -- Spark's "trivial changes ... do not require a JIRA"
+//   - an affirmatively checked `Refactor / chore`, `Docs`, or `Test / CI` box,
+//     with no `Bug fix` / `Feature` / `UI` box also checked. Note this requires a
+//     DECLARATION: an empty or deleted template does NOT exempt, or removing the
+//     template would become the way to skip the rule.
+//   - trivial changes (<= 9 changed lines, the size/XS cutoff) -- Spark's
+//     "trivial changes ... do not require a JIRA". Counts raw additions +
+//     deletions, so unlike size/XS it does not exclude regenerated lockfiles.
 //   - reverts
 //   - `no-issue` on a line of its own in the body (an escape hatch a first-time
 //     contributor can use; they cannot apply labels)
@@ -27,6 +32,10 @@
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 const HOURS_TO_SCAN = 24;
+// The rule applies going forward only. PRs opened before this date are the
+// backlog's problem, cleared by hand, and must never be flagged -- so the floor
+// is a constant here rather than something a wider scan window could reach past.
+const EFFECTIVE_FROM = "2026-08-05T00:00:00Z";
 const LABEL = "missing-issue-link";
 const OVERRIDE_LABEL = "skip-issue-check";
 // Same threshold pr-size.js uses for size/XS.
@@ -38,6 +47,9 @@ const MAINTAINER_ASSOCIATIONS = ["MEMBER", "OWNER", "COLLABORATOR"];
 // tracking issue. Must match the "Type of change" boxes in
 // .github/pull_request_template.md.
 const DECLARED_EXEMPT_TYPE = /- \[[xX]\]\s*(?:Refactor \/ chore|Docs|Test \/ CI)\b/;
+// Types that always want an issue. Checked alongside an exempt type, these win:
+// otherwise ticking `Test / CI` next to `Bug fix` is a free opt-out.
+const DECLARED_TRACKED_TYPE = /- \[[xX]\]\s*(?:Bug fix|Feature|UI \/ frontend change)\b/;
 // `no-issue` alone on a line (mirrors Prow's `releasenote: none` escape hatch).
 const OPT_OUT = /^[ \t>]*no-issue[ \t]*$/im;
 
@@ -92,7 +104,9 @@ function exemptReason(pr, maintainers = new Set()) {
   if (MAINTAINER_ASSOCIATIONS.includes(pr.authorAssociation)) return "maintainer";
   if (maintainers.has((pr.author?.login ?? "").toLowerCase())) return "maintainer";
   if (labels.includes(OVERRIDE_LABEL)) return `${OVERRIDE_LABEL} label`;
-  if (DECLARED_EXEMPT_TYPE.test(body)) return "declared chore/docs/test";
+  if (DECLARED_EXEMPT_TYPE.test(body) && !DECLARED_TRACKED_TYPE.test(body)) {
+    return "declared chore/docs/test";
+  }
   if ((pr.additions ?? 0) + (pr.deletions ?? 0) <= TRIVIAL_LINES) return "trivial";
   if (/^\s*revert\b/i.test(pr.title ?? "")) return "revert";
   if (OPT_OUT.test(body)) return "no-issue opt-out";
@@ -115,7 +129,9 @@ module.exports = async ({ context, github, core }) => {
   const { owner, repo } = context.repo;
   // Default to a dry run: enforcement is opt-in via the workflow env.
   const enforce = process.env.ENFORCE === "true";
-  const limit = Number(process.env.LIMIT || 0) || Infinity;
+  // Unset means unlimited; an explicit LIMIT=0 means flag nothing.
+  const parsedLimit = Number(process.env.LIMIT);
+  const limit = Number.isFinite(parsedLimit) && process.env.LIMIT !== "" ? parsedLimit : Infinity;
 
   try {
     // Load maintainers from the API, not the checked-out tree, so a PR can't
@@ -155,7 +171,11 @@ module.exports = async ({ context, github, core }) => {
       }
     }
 
-    const cutoff = new Date(Date.now() - HOURS_TO_SCAN * MS_PER_HOUR);
+    const windowStart = new Date(Date.now() - HOURS_TO_SCAN * MS_PER_HOUR);
+    // Never look further back than the effective date, whichever is later.
+    const cutoff = new Date(
+      Math.max(windowStart.getTime(), new Date(EFFECTIVE_FROM).getTime())
+    );
     const cutoffString = cutoff.toISOString().replace(/\.\d{3}Z$/, "Z");
     const searchQuery = `repo:${owner}/${repo} is:pr is:open created:>${cutoffString}`;
     console.log(`Scanning PRs: ${searchQuery} (enforce=${enforce})`);
@@ -209,16 +229,22 @@ module.exports = async ({ context, github, core }) => {
         continue;
       }
 
+      const author = pr.author?.login ?? "contributor";
+
+      // A dry run enumerates every verdict -- that's its whole point, so LIMIT
+      // (which bounds how many contributors one enforcing run may touch) must
+      // not truncate the list an operator reviews before enabling.
+      if (!enforce) {
+        verdicts.push({ pr: pr.number, verdict: "FLAG", reason: `@${author}` });
+        continue;
+      }
+
       if (flagged >= limit) {
         verdicts.push({ pr: pr.number, verdict: "deferred", reason: "run limit reached" });
         continue;
       }
-
-      const author = pr.author?.login ?? "contributor";
       verdicts.push({ pr: pr.number, verdict: "FLAG", reason: `@${author}` });
       flagged++;
-
-      if (!enforce) continue;
 
       // Comment before labeling: if the comment fails the PR stays unlabeled
       // and is retried next run. Labeling first would permanently suppress it.
@@ -270,3 +296,4 @@ module.exports = async ({ context, github, core }) => {
 // Exported for the offline unit test.
 module.exports.exemptReason = exemptReason;
 module.exports.LABEL = LABEL;
+module.exports.EFFECTIVE_FROM = EFFECTIVE_FROM;

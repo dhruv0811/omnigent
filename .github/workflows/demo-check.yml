@@ -5,9 +5,10 @@ name: PR Hygiene
 #   1. Demo check -- comment on PRs that check "Bug fix" / "Feature" /
 #      "UI / frontend change" but provide no demo (screenshot / video).
 #      See demo-check.js.
-#   2. Issue-link check -- flag PRs that link no issue. Dry-run by default
-#      (writes the verdict list to the step summary and changes nothing);
-#      set ENFORCE to "true" to comment + label. See pr-issue-link.js.
+#   2. Issue-link check -- flag PRs that link no issue. Forward-only (nothing
+#      opened before its effective date is considered, so the backlog is
+#      untouched) and dry-run by default: it writes the verdict list to the step
+#      summary and changes nothing until ENFORCE is "true". See pr-issue-link.js.
 #
 # Both skip drafts and PRs they've already flagged (the label is the dedupe).
 # Neither ever closes anything. Never checks out or runs PR code -- they read
@@ -52,8 +53,9 @@ jobs:
             const script = require(".github/workflows/demo-check.js");
             await script({ context, github, core });
       # Dry run: resolves every verdict into the step summary without
-      # commenting or labeling. Flip ENFORCE to "true" once the verdict list
-      # has been reviewed; LIMIT caps how many PRs one run may flag.
+      # commenting or labeling. Flip ENFORCE to "true" once the verdict list has
+      # been reviewed; LIMIT then caps how many PRs one run may flag (it does not
+      # truncate a dry run, whose job is to show the complete list).
       - name: Issue-link check
         if: always()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0

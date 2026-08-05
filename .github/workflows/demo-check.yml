@@ -5,7 +5,7 @@ name: PR Hygiene
 #   1. Demo check -- comment on PRs that check "Bug fix" / "Feature" /
 #      "UI / frontend change" but provide no demo (screenshot / video).
 #      See demo-check.js.
-#   2. Issue-link check -- flag PRs that link no issue. Forward-only (nothing
+#   2. Issue-link check -- comment on PRs that link no issue. Forward-only (nothing
 #      opened before its effective date is considered, so the backlog is
 #      untouched) and dry-run by default: it writes the verdict list to the step
 #      summary and changes nothing until ENFORCE is "true". See pr-issue-link.js.

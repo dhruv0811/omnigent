@@ -34,7 +34,10 @@ function pr({
 
 // Run the script over PR nodes. `linked` maps PR number -> closing-issue count.
 // `env` overrides process.env for the run.
-async function run(nodes, { linked = {}, env = {}, linkError = false, maintainers = [] } = {}) {
+async function run(
+  nodes,
+  { linked = {}, env = {}, linkError = false, maintainers = [], existingComments = {} } = {}
+) {
   const commented = [];
   const labeled = [];
   const queries = [];
@@ -62,6 +65,8 @@ async function run(nodes, { linked = {}, env = {}, linkError = false, maintainer
         },
       };
     },
+    paginate: async (_fn, { issue_number }) =>
+      (existingComments[issue_number] ?? []).map((body) => ({ body })),
     rest: {
       repos: {
         getContent: async () => ({
@@ -69,7 +74,7 @@ async function run(nodes, { linked = {}, env = {}, linkError = false, maintainer
         }),
       },
       issues: {
-        createLabel: async () => {},
+        listComments: "listComments",
         createComment: async ({ issue_number, body }) => commented.push({ issue_number, body }),
         addLabels: async ({ issue_number, labels: ls }) => labeled.push({ issue_number, labels: ls }),
       },
@@ -204,14 +209,15 @@ for (const tracked of ["Bug fix", "Feature", "UI / frontend change"]) {
     assert.strictEqual(labeled.length, 0, "dry run must not label");
   }
 
-  // Enforcing: an unlinked, non-exempt PR gets one comment + the label.
+  // Enforcing: an unlinked, non-exempt PR gets exactly one comment and no label.
   {
     const { commented, labeled } = await run([pr({ number: 21, author: "alice" })], { env: ENFORCE });
     assert.strictEqual(commented.length, 1);
     assert.strictEqual(commented[0].issue_number, 21);
     assert.match(commented[0].body, /@alice/);
     assert.match(commented[0].body, /Closes #123/);
-    assert.deepStrictEqual(labeled, [{ issue_number: 21, labels: [script.LABEL] }]);
+    assert.ok(commented[0].body.startsWith(script.MARKER), "comment carries the dedupe marker");
+    assert.deepStrictEqual(labeled, [], "no label is applied");
   }
 
   // A linked PR is left alone even when enforcing.
@@ -224,10 +230,23 @@ for (const tracked of ["Bug fix", "Feature", "UI / frontend change"]) {
     assert.strictEqual(labeled.length, 0);
   }
 
-  // Already-labeled PRs are never commented on twice.
+  // An already-nudged PR is never commented on twice: the hidden marker in the
+  // bot's own earlier comment is the dedupe.
   {
-    const { commented } = await run([pr({ number: 23, labels: [script.LABEL] })], { env: ENFORCE });
-    assert.strictEqual(commented.length, 0, "label dedupes repeat runs");
+    const { commented } = await run([pr({ number: 23 })], {
+      env: ENFORCE,
+      existingComments: { 23: [`${script.MARKER}\nplease link an issue`] },
+    });
+    assert.strictEqual(commented.length, 0, "marker dedupes repeat runs");
+  }
+
+  // An unrelated human comment must not be mistaken for the nudge.
+  {
+    const { commented } = await run([pr({ number: 231 })], {
+      env: ENFORCE,
+      existingComments: { 231: ["lgtm"] },
+    });
+    assert.strictEqual(commented.length, 1, "only the marker suppresses the nudge");
   }
 
   // A failed link lookup must fail closed (skip), never flag.

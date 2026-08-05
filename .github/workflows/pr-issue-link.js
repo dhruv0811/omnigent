@@ -1,9 +1,8 @@
 // Scan PRs opened in the last 24 hours and flag any that don't link an issue.
 // Runs hourly from the demo-check sweep; the 24-hour window ensures every new PR
-// is checked even if it was opened just before a cron tick. Flagged PRs get one
-// comment plus the `missing-issue-link` label, which also dedupes subsequent
-// runs. Nothing is ever closed -- the label is the signal a future merge gate or
-// closer can read (Prow's model: plugins label, only the merge queue blocks).
+// is checked even if it was opened just before a cron tick. A flagged PR gets one
+// comment and nothing else: no label (it would only add noise to the queue
+// maintainers filter) and no close.
 //
 // Forward-only: nothing opened before EFFECTIVE_FROM is ever considered, so the
 // existing backlog is untouched no matter how the scan window is set.
@@ -36,7 +35,10 @@ const HOURS_TO_SCAN = 24;
 // backlog's problem, cleared by hand, and must never be flagged -- so the floor
 // is a constant here rather than something a wider scan window could reach past.
 const EFFECTIVE_FROM = "2026-08-05T00:00:00Z";
-const LABEL = "missing-issue-link";
+// Dedupe on a hidden marker in the bot's own comment rather than a label: the
+// nudge is a one-shot message, and a label on top of it would add queue noise
+// maintainers have to filter past (same approach as reopen-notice.js).
+const MARKER = "<!-- pr-issue-link -->";
 const OVERRIDE_LABEL = "skip-issue-check";
 // Same threshold pr-size.js uses for size/XS.
 const TRIVIAL_LINES = 9;
@@ -154,23 +156,6 @@ module.exports = async ({ context, github, core }) => {
       core.warning(`Could not load .github/MAINTAINER: ${err.message}`);
     }
 
-    if (enforce) {
-      try {
-        await github.rest.issues.createLabel({
-          owner,
-          repo,
-          name: LABEL,
-          color: "d93f0b",
-          description: "PR does not link an issue",
-        });
-      } catch (err) {
-        // 422 = already exists; anything else is unexpected.
-        if (err.status !== 422) {
-          core.warning(`Could not create label '${LABEL}': ${err.message}`);
-        }
-      }
-    }
-
     const windowStart = new Date(Date.now() - HOURS_TO_SCAN * MS_PER_HOUR);
     // Never look further back than the effective date, whichever is later.
     const cutoff = new Date(
@@ -198,13 +183,6 @@ module.exports = async ({ context, github, core }) => {
     let flagged = 0;
 
     for (const pr of allPRs) {
-      const labels = pr.labels?.nodes?.map((l) => l.name) ?? [];
-      // Already flagged: the label is the dedupe, so never comment twice.
-      if (labels.includes(LABEL)) {
-        verdicts.push({ pr: pr.number, verdict: "skip", reason: "already flagged" });
-        continue;
-      }
-
       const exempt = exemptReason(pr, maintainers);
       if (exempt) {
         verdicts.push({ pr: pr.number, verdict: "exempt", reason: exempt });
@@ -243,22 +221,27 @@ module.exports = async ({ context, github, core }) => {
         verdicts.push({ pr: pr.number, verdict: "deferred", reason: "run limit reached" });
         continue;
       }
+
+      // Only PRs about to be nudged pay for the comment lookup. Checked here
+      // rather than up front so the dry run doesn't spend a request per PR.
+      const comments = await github.paginate(github.rest.issues.listComments, {
+        owner,
+        repo,
+        issue_number: pr.number,
+        per_page: 100,
+      });
+      if (comments.some((c) => c.body?.includes(MARKER))) {
+        verdicts.push({ pr: pr.number, verdict: "skip", reason: "already nudged" });
+        continue;
+      }
+
       verdicts.push({ pr: pr.number, verdict: "FLAG", reason: `@${author}` });
       flagged++;
-
-      // Comment before labeling: if the comment fails the PR stays unlabeled
-      // and is retried next run. Labeling first would permanently suppress it.
       await github.rest.issues.createComment({
         owner,
         repo,
         issue_number: pr.number,
-        body: message(author),
-      });
-      await github.rest.issues.addLabels({
-        owner,
-        repo,
-        issue_number: pr.number,
-        labels: [LABEL],
+        body: `${MARKER}\n${message(author)}`,
       });
     }
 
@@ -295,5 +278,5 @@ module.exports = async ({ context, github, core }) => {
 
 // Exported for the offline unit test.
 module.exports.exemptReason = exemptReason;
-module.exports.LABEL = LABEL;
+module.exports.MARKER = MARKER;
 module.exports.EFFECTIVE_FROM = EFFECTIVE_FROM;

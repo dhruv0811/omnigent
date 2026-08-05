@@ -97,7 +97,11 @@ async function run(
   const saved = { ...process.env };
   Object.assign(process.env, env);
   try {
-    await script({ context: { repo: { owner: "o", repo: "r" } }, github, core });
+    await script({
+      context: { repo: { owner: "o", repo: "r" }, payload: { repository: { default_branch: "main" } } },
+      github,
+      core,
+    });
   } finally {
     for (const k of Object.keys(env)) delete process.env[k];
     Object.assign(process.env, saved);
@@ -288,6 +292,15 @@ for (const tracked of ["Bug fix", "Feature", "UI / frontend change"]) {
   {
     const { commented } = await run([pr({ number: 43 })], { env: { ...ENFORCE, LIMIT: "0" } });
     assert.strictEqual(commented.length, 0, "LIMIT=0 flags nothing");
+  }
+
+  // A malformed LIMIT must fail toward flagging nothing, not everything.
+  {
+    const { commented, warnings } = await run([pr({ number: 44 })], {
+      env: { ...ENFORCE, LIMIT: "abc" },
+    });
+    assert.strictEqual(commented.length, 0, "malformed LIMIT flags nothing");
+    assert.ok(warnings.some((w) => /not a number/.test(w)), "and says so");
   }
 
   // Maintainer PRs are never commented on, by either signal.

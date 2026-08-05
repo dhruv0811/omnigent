@@ -125,9 +125,18 @@ module.exports = async ({ context, github, core }) => {
   const { owner, repo } = context.repo;
   // Default to a dry run: enforcement is opt-in via the workflow env.
   const enforce = process.env.ENFORCE === "true";
-  // Unset means unlimited; an explicit LIMIT=0 means flag nothing.
-  const parsedLimit = Number(process.env.LIMIT);
-  const limit = Number.isFinite(parsedLimit) && process.env.LIMIT !== "" ? parsedLimit : Infinity;
+  // Unset means unlimited; an explicit LIMIT=0 means flag nothing. A malformed
+  // value flags nothing rather than everything -- this bounds how many
+  // contributors one run may comment on, so the safe default is the low one.
+  const rawLimit = process.env.LIMIT;
+  let limit = Infinity;
+  if (rawLimit !== undefined && rawLimit !== "") {
+    limit = Number(rawLimit);
+    if (!Number.isFinite(limit)) {
+      core.warning(`LIMIT=${rawLimit} is not a number; flagging nothing this run.`);
+      limit = 0;
+    }
+  }
 
   try {
     // Load maintainers from the API, not the checked-out tree, so a PR can't
@@ -138,7 +147,7 @@ module.exports = async ({ context, github, core }) => {
         owner,
         repo,
         path: ".github/MAINTAINER",
-        ref: "main",
+        ref: context.payload.repository?.default_branch ?? "main",
       });
       Buffer.from(resp.data.content, "base64")
         .toString("utf8")

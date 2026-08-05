@@ -10,7 +10,8 @@ name: PR Hygiene
 #      untouched) and dry-run by default: it writes the verdict list to the step
 #      summary and changes nothing until ENFORCE is "true". See pr-issue-link.js.
 #
-# Both skip drafts and PRs they've already flagged (the label is the dedupe).
+# Both skip drafts and PRs they've already flagged -- the demo check dedupes on
+# its `needs-demo` label, the issue-link check on a marker in its own comment.
 # Neither ever closes anything. Never checks out or runs PR code -- they read
 # PR metadata via the API using only the default-branch script.
 

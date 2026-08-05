@@ -149,7 +149,8 @@ assert.strictEqual(
   "10 changed lines is not trivial"
 );
 assert.strictEqual(exemptReason(pr({ number: 7, title: "Revert \"feat: x\"" })), "revert");
-assert.strictEqual(exemptReason(pr({ number: 8, body: "blah\nno-issue\nblah" })), "no-issue opt-out");
+// There is no self-service opt-out: writing `no-issue` in the body does nothing.
+assert.strictEqual(exemptReason(pr({ number: 8, body: "blah\nno-issue\nblah" })), null);
 
 // Declared exempt types, matching the real template's checkbox labels.
 for (const type of ["Refactor / chore", "Docs", "Test / CI"]) {

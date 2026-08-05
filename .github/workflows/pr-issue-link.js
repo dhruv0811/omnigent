@@ -22,9 +22,9 @@
 //     "trivial changes ... do not require a JIRA". Counts raw additions +
 //     deletions, so unlike size/XS it does not exclude regenerated lockfiles.
 //   - reverts
-//   - `no-issue` on a line of its own in the body (an escape hatch a first-time
-//     contributor can use; they cannot apply labels)
-//   - `skip-issue-check` label (maintainer override)
+//   - `skip-issue-check` label (maintainer override -- deliberately the only
+//     unconditional opt-out, and it needs write access. A self-service escape
+//     hatch would make the rule optional for exactly the PRs it targets.)
 //   - maintainers, by authorAssociation OR the .github/MAINTAINER file. Both are
 //     needed: a maintainer whose org membership is private reads as CONTRIBUTOR,
 //     and a maintainer may hold write access without being listed in the file.
@@ -52,8 +52,6 @@ const DECLARED_EXEMPT_TYPE = /- \[[xX]\]\s*(?:Refactor \/ chore|Docs|Test \/ CI)
 // Types that always want an issue. Checked alongside an exempt type, these win:
 // otherwise ticking `Test / CI` next to `Bug fix` is a free opt-out.
 const DECLARED_TRACKED_TYPE = /- \[[xX]\]\s*(?:Bug fix|Feature|UI \/ frontend change)\b/;
-// `no-issue` alone on a line (mirrors Prow's `releasenote: none` escape hatch).
-const OPT_OUT = /^[ \t>]*no-issue[ \t]*$/im;
 
 const QUERY = `
   query($cursor: String, $searchQuery: String!) {
@@ -111,7 +109,6 @@ function exemptReason(pr, maintainers = new Set()) {
   }
   if ((pr.additions ?? 0) + (pr.deletions ?? 0) <= TRIVIAL_LINES) return "trivial";
   if (/^\s*revert\b/i.test(pr.title ?? "")) return "revert";
-  if (OPT_OUT.test(body)) return "no-issue opt-out";
   return null;
 }
 
@@ -120,10 +117,7 @@ const message = (author) =>
 
 Please edit the description to link the issue this PR addresses with a closing keyword, e.g. \`Closes #123\`, or link it from the **Development** section of the sidebar. Linking gives the PR the issue's priority in our review queue, and closes the issue automatically on merge.
 
-If this change genuinely has no associated issue:
-
-- Check **Refactor / chore**, **Docs**, or **Test / CI** under *Type of change* if that's what it is, or
-- Put \`no-issue\` on its own line in the description.
+If this change genuinely has no associated issue, check **Refactor / chore**, **Docs**, or **Test / CI** under *Type of change* — those types don't need one. Anything else should have an issue so it can be prioritized; open one if it doesn't exist yet.
 
 _No action is taken beyond this comment._`;
 

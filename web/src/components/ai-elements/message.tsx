@@ -433,7 +433,16 @@ export const MessageResponse = memo(
 
     return (
       <Streamdown
-        className={cn("size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", className)}
+        // `leading-[1.75]` (unitless, so it still tracks the Appearance
+        // font-size setting) relaxes the prose line-height above the 1.6 the
+        // shared `text-ui` token carries — that value packed wrapped lines of a
+        // paragraph too tightly to read comfortably. Scoped to the markdown
+        // wrapper, not MessageContent, so tool rows / "See N steps" lines that
+        // share the column keep their tighter rhythm.
+        className={cn(
+          "size-full leading-[1.75] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+          className,
+        )}
         plugins={STREAMDOWN_PLUGINS}
         // Let links open on a plain click (and cmd/ctrl-click in a new tab)
         // instead of Streamdown's default "Open external link?" modal.

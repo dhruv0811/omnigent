@@ -401,6 +401,82 @@ class SessionsNamespace:
         session_id = str(created["session_id"])
         return await self.get(session_id)
 
+    async def create_from_agent_id(
+        self,
+        agent_id: str,
+        *,
+        title: str | None = None,
+        labels: dict[str, str] | None = None,
+        reasoning_effort: str | None = None,
+        workspace: str | None = None,
+    ) -> Session:
+        """
+        Create a new session bound to an already-registered agent.
+
+        Calls JSON ``POST /v1/sessions`` with an ``agent_id`` body. This
+        is the path for a client with no local bundle to upload — the
+        agent is already registered on the server, as when connecting to
+        a remote URL. Unlike :meth:`create`, the JSON route returns the
+        full session snapshot, so no follow-up ``GET`` is needed.
+
+        :param agent_id: Durable identifier of a registered agent, e.g.
+            ``"ag_abc123"``.
+        :param title: Optional human-readable title for the session,
+            e.g. ``"debugging auth flow"``.
+        :param labels: Initial guardrails labels to set. ``None``
+            starts with no labels.
+        :param reasoning_effort: Optional per-session reasoning
+            effort, e.g. ``"high"``. ``None`` uses the agent default.
+        :param workspace: Optional absolute starting cwd to record on
+            the session, e.g. ``"/Users/corey/projects/myapp"``.
+        :returns: The newly created :class:`Session` snapshot.
+        :raises OmnigentError: If the server returns a non-2xx
+            status.
+        """
+        body: dict[str, Any] = {"agent_id": agent_id}
+        if title is not None:
+            body["title"] = title
+        if labels is not None:
+            body["labels"] = labels
+        if reasoning_effort is not None:
+            body["reasoning_effort"] = reasoning_effort
+        if workspace is not None:
+            body["workspace"] = workspace
+        resp = await self._http.post(f"{self._base}/v1/sessions", json=body)
+        raise_for_status(resp.status_code, response_body(resp))
+        created = require_json_object(resp, "POST /v1/sessions")
+        return Session.from_dict(created)
+
+    async def resolve_agent_id(self, agent_name: str) -> str:
+        """
+        Resolve a registered agent's durable id from its display name.
+
+        Used by clients that only know the name the user picked — the
+        remote-URL chat picker lists names, but session creation binds
+        by id.
+
+        :param agent_name: Agent display name, e.g. ``"hello_world"``.
+        :returns: The matching agent's durable id.
+        :raises OmnigentError: If the listing returns a non-2xx status.
+        :raises LookupError: If no registered agent has that name.
+        """
+        resp = await self._http.get(f"{self._base}/v1/agents", params={"limit": 100})
+        raise_for_status(resp.status_code, response_body(resp))
+        listing = require_json_object(resp, "GET /v1/agents")
+        data = listing.get("data", [])
+        names: list[str] = []
+        for item in data if isinstance(data, list) else []:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if name == agent_name:
+                return str(item["id"])
+            if isinstance(name, str):
+                names.append(name)
+        raise LookupError(
+            f"No agent named {agent_name!r} is registered on this server. Available: {names}"
+        )
+
     async def list(
         self,
         *,

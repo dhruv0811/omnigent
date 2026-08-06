@@ -1684,13 +1684,33 @@ class _SessionsChatReplAdapter:
         async with self._ensure_session_lock:
             if self._session_id is not None and self._stream_task is not None:
                 return self._session_id
-            if self._session_id is None:
-                if self._session_bundle is None:
-                    raise RuntimeError(
-                        "Sessions API fresh session creation requires a local agent bundle. "
-                        "Start the REPL from `omnigent run <agent.yaml>` so the CLI can "
-                        "upload the bundle through POST /v1/sessions."
+            if self._session_id is None and self._session_bundle is None:
+                # Connected to a remote server, so there is no local bundle to
+                # upload: the agent is already registered there. Bind the new
+                # session to it by id through the JSON create route.
+                if _dbg:
+                    print(
+                        "[sessions-adapter] POST /v1/sessions json agent_id",
+                        file=sys.stderr,
+                        flush=True,
                     )
+                agent_id = self._agent_id or await self._client.sessions.resolve_agent_id(
+                    self._agent_name
+                )
+                session = await self._client.sessions.create_from_agent_id(
+                    agent_id,
+                    reasoning_effort=self._reasoning_effort,
+                    workspace=os.getcwd(),
+                )
+                self._session_id = session.id
+                self._hydrate_from_session_snapshot(session)
+                if _dbg:
+                    print(
+                        f"[sessions-adapter] session created id={self._session_id!r}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            elif self._session_id is None:
                 if _dbg:
                     print(
                         "[sessions-adapter] POST /v1/sessions multipart bundle",

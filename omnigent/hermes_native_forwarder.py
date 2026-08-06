@@ -1197,6 +1197,9 @@ async def forward_hermes_store_to_session(
                         items = await asyncio.to_thread(
                             _read_new_items, db, hermes_session_id, last_id, agent_name
                         )
+                        # Dropping every item leaves the cursor parked until a newer
+                        # row lands, which is correct: there is nothing left to
+                        # deliver for it, and the next row restarts the count.
                         if partial_row_id:
                             items = _drop_delivered_prefix(
                                 items, partial_row_id, partial_row_items
@@ -1266,6 +1269,14 @@ async def forward_hermes_store_to_session(
                                 partial_row_id = 0
                                 partial_row_items = 0
                             else:
+                                # Count from 1 on a row we were not already inside.
+                                # A partial row can disappear before its retry
+                                # (compaction soft-deletes it, and the re-pin that
+                                # resets these is skipped when the session has no
+                                # child), so carrying its count into the next row
+                                # would over-drop that row's items as delivered.
+                                if partial_row_id != action.msg_id:
+                                    partial_row_items = 0
                                 partial_row_id = action.msg_id
                                 partial_row_items += 1
                             _write_state(
@@ -1337,6 +1348,8 @@ async def forward_hermes_store_to_session(
                                         _ForwardState(
                                             hermes_session_id=child,
                                             last_id=0,
+                                            partial_row_id=0,
+                                            partial_row_items=0,
                                             launch_epoch_s=launch_epoch_s,
                                             active_turn_id=None,
                                         ),

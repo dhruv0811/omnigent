@@ -1862,6 +1862,96 @@ def test_drop_delivered_prefix_only_trims_its_own_row() -> None:
 
 
 @pytest.mark.asyncio
+async def test_forward_loop_partial_count_resets_when_partial_row_vanishes(
+    tmp_path, monkeypatch
+) -> None:
+    """The in-row item count must restart on a row we were not already inside.
+
+    A row that failed partway can disappear before its retry: compaction
+    soft-deletes it (``active=0``) and the child re-pin that resets the partial
+    fields is skipped when the session has no child. Carrying its count into the
+    next row would treat that row's undelivered items as already delivered and
+    drop them, the same permanent loss this cursor is meant to prevent."""
+    workspace = str(tmp_path)
+    db = tmp_path / "state.db"
+    con = sqlite3.connect(db)
+    con.executescript(_SCHEMA)
+    con.execute(
+        "INSERT INTO sessions(id, source, cwd, started_at) VALUES (?,?,?,?)",
+        ("s1", "cli", workspace, 1000.0),
+    )
+    calls = json.dumps([{"id": "c1", "function": {"name": "search", "arguments": "{}"}}])
+    # Row 1 carries prose + a tool call, so it expands to two items; its second
+    # item's POST fails below, leaving the cursor inside row 1.
+    con.execute(
+        "INSERT INTO messages"
+        "(session_id, role, content, tool_call_id, tool_calls, tool_name, active)"
+        " VALUES (?,?,?,?,?,?,?)",
+        ("s1", "assistant", "I'll search", None, calls, None, 1),
+    )
+    con.commit()
+    con.close()
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+
+    posted: list[tuple[int, str]] = []
+    row_2_call_failed = {"yet": False}
+
+    async def _fail_each_row_second_item_once(_client, *, session_id, item):
+        if item.item_type == "function_call":
+            # Row 1 never retries (it is soft-deleted below); row 2 fails its
+            # first attempt so the retry has to replay it.
+            if item.msg_id == 1:
+                raise RuntimeError("simulated transient failure on row 1's second item")
+            if item.msg_id == 2 and not row_2_call_failed["yet"]:
+                row_2_call_failed["yet"] = True
+                raise RuntimeError("simulated transient failure on row 2's second item")
+        posted.append((item.msg_id, item.item_type))
+
+    monkeypatch.setattr(f, "_post_conversation_item", _fail_each_row_second_item_once)
+    monkeypatch.setattr(f, "_post_external_session_status", _ignore_status)
+
+    iteration = {"n": 0}
+
+    async def _sleep(_s):
+        iteration["n"] += 1
+        if iteration["n"] == 1:
+            # Between polls: compaction soft-deletes the partially-mirrored row 1
+            # and a fresh row 2 lands, which also carries prose + a tool call.
+            con = sqlite3.connect(db)
+            con.execute("UPDATE messages SET active = 0 WHERE id = 1")
+            con.execute(
+                "INSERT INTO messages"
+                "(session_id, role, content, tool_call_id, tool_calls, tool_name, active)"
+                " VALUES (?,?,?,?,?,?,?)",
+                ("s1", "assistant", "retrying", None, calls, None, 1),
+            )
+            con.commit()
+            con.close()
+        if iteration["n"] >= 3:  # poll 2 fails on row 2, poll 3 retries it
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(f.asyncio, "sleep", _sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await f.forward_hermes_store_to_session(
+            base_url="http://x",
+            headers={},
+            session_id="conv_vanished",
+            bridge_dir=bridge_dir,
+            agent_name="hermes-native-ui",
+            workspace=workspace,
+            launch_epoch_s=1000.0,
+            db_path=db,
+        )
+
+    # Both of row 2's items land exactly once. Inheriting row 1's count would make
+    # the retry drop row 2's prose as already delivered, losing it permanently.
+    assert [m for m in posted if m[0] == 2] == [(2, "message"), (2, "function_call")]
+    assert f._read_state(bridge_dir).last_id == 2
+
+
+@pytest.mark.asyncio
 async def test_forward_loop_empty_prose_terminal_closes_turn(tmp_path, monkeypatch) -> None:
     """An assistant terminal row with empty content (no prose, no tool_calls)
     yields a role-less sentinel, but must still CLOSE the turn: active_turn_id is

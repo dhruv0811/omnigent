@@ -32,6 +32,7 @@ from omnigent.cli import (
     _expand_config_env_vars,
     _extract_global_logging_flags,
     _HostHttpResult,
+    _is_local_server_request,
     _is_removed_ad_hoc_invocation,
     _is_run_shorthand,
     _load_global_config,
@@ -3754,16 +3755,18 @@ def test_run_server_without_agent_dispatches_direct_server(
     )
 
 
-def test_run_empty_server_uses_local_mode_over_configured_remote(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("alias", ["", "local", "LOCAL", " local "])
+def test_run_local_server_alias_beats_configured_remote(
+    alias: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``run AGENT --server ""`` targets a local server, not the configured one.
+    """``run AGENT --server local`` targets a local server, not the configured one.
 
-    An empty ``--server`` is the documented way to ask for a local server
-    ("auto-spawn a persistent local server ... instead of a remote one"), so it
-    has to beat the ``server`` config default rather than fall back to it.
-    ``run_chat`` gets ``server_url=None``, the sentinel ``_ensure_backend``
-    reads as local mode.
+    ``--server local`` (and the older ``--server ""``) is the documented way to
+    ask for a local server "instead of a remote one", so it has to beat the
+    ``server`` config default rather than fall back to it. ``run_chat`` gets
+    ``server_url=None``, the sentinel ``_ensure_backend`` reads as local mode.
+    Matching ignores case and surrounding space, so a shell-quoted
+    ``--server " local "`` behaves the same.
     """
     monkeypatch.setattr(
         "omnigent.cli._load_effective_config",
@@ -3773,7 +3776,7 @@ def test_run_empty_server_uses_local_mode_over_configured_remote(
     monkeypatch.setattr("omnigent.chat.run_chat", run_chat)
 
     result = CliRunner().invoke(
-        cli, ["run", "tests/resources/examples/hello_world.yaml", "--server", ""]
+        cli, ["run", "tests/resources/examples/hello_world.yaml", "--server", alias]
     )
 
     assert result.exit_code == 0, result.output
@@ -3782,10 +3785,31 @@ def test_run_empty_server_uses_local_mode_over_configured_remote(
     assert kwargs["server_url"] is None
 
 
-def test_run_empty_server_without_agent_is_not_a_direct_server(
-    monkeypatch: pytest.MonkeyPatch,
+def test_run_localhost_server_is_still_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``localhost`` URL stays an explicit server — only bare ``local`` is the alias.
+
+    The local-mode aliases match the whole value, so hosts that merely *start*
+    with "local" keep their normal explicit-server behavior instead of being
+    swallowed by the alias.
+    """
+    monkeypatch.setattr("omnigent.cli._load_effective_config", dict)
+    run_chat = Mock()
+    monkeypatch.setattr("omnigent.chat.run_chat", run_chat)
+
+    result = CliRunner().invoke(
+        cli,
+        ["run", "tests/resources/examples/hello_world.yaml", "--server", "localhost:8000"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert run_chat.call_args.kwargs["server_url"] == "localhost:8000"
+
+
+@pytest.mark.parametrize("alias", ["", "local"])
+def test_run_local_server_alias_without_agent_is_not_a_direct_server(
+    alias: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``run --server ""`` (no AGENT) resolves the default agent locally.
+    """``run --server local`` (no AGENT) resolves the default agent locally.
 
     Regression: the no-AGENT direct-server branch gated on ``server is not
     None``, so an empty ``--server`` was misread as a direct server URL and
@@ -3804,7 +3828,7 @@ def test_run_empty_server_without_agent_is_not_a_direct_server(
     run_chat = Mock()
     monkeypatch.setattr("omnigent.chat.run_chat", run_chat)
 
-    result = CliRunner().invoke(cli, ["run", "--server", ""])
+    result = CliRunner().invoke(cli, ["run", "--server", alias])
 
     assert result.exit_code == 0, result.output
     kwargs = run_chat.call_args.kwargs
@@ -3813,17 +3837,42 @@ def test_run_empty_server_without_agent_is_not_a_direct_server(
     assert kwargs["server_url"] is None
 
 
-@pytest.mark.parametrize("value", ["", "   "])
-def test_resolve_server_url_rejects_empty_value(value: str) -> None:
-    """An empty ``--server`` value fails loud instead of yielding ``"https:"``.
+@pytest.mark.parametrize("value", ["", "   ", "local", "LOCAL"])
+def test_resolve_server_url_rejects_local_server_aliases(value: str) -> None:
+    """A local-server alias fails loud instead of normalizing to a bogus URL.
 
     Normalizing an empty string used to produce the bare scheme ``"https:"``
     (``https://`` from the default-scheme step, then trailing-slash-trimmed),
-    which every caller then treated as a real URL. Callers select local mode
-    with a falsy value and must never route it here.
+    which every caller then treated as a real URL; ``"local"`` would likewise
+    become the unroutable ``https://local``. Callers route local mode before
+    reaching here and must never pass an alias in.
     """
-    with pytest.raises(ClickException, match="empty value"):
+    with pytest.raises(ClickException, match="selects a local server"):
         _resolve_server_url(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", True),
+        ("   ", True),
+        ("local", True),
+        ("LOCAL", True),
+        (" local ", True),
+        (None, False),
+        ("localhost", False),
+        ("localhost:8000", False),
+        ("http://localhost:6767", False),
+        ("https://example.databricksapps.com", False),
+    ],
+)
+def test_is_local_server_request(value: str | None, expected: bool) -> None:
+    """Only a whole-value ``""``/``local`` selects local mode.
+
+    ``None`` means the flag was absent (the config default still applies), and a
+    host that merely starts with "local" is a real server, so neither counts.
+    """
+    assert _is_local_server_request(value) is expected
 
 
 def test_run_server_resume_by_id_forwards_to_run_attach(

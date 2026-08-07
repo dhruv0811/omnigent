@@ -187,6 +187,10 @@ def test_repl_adapter_creates_session_without_bundle(
     ``session_bundle=None`` and ``session_id=None``.  The adapter must resolve
     the registered agent and create the session rather than refusing for lack
     of a bundle.
+
+    Passes ``runner_id=None`` because that is what ``run_chat`` supplies for a
+    URL target: a remote client owns no runner, so the adapter has to adopt one
+    the server already has online or the first turn fails to dispatch.
     """
     from omnigent_client import OmnigentClient
 
@@ -201,7 +205,7 @@ def test_repl_adapter_creates_session_without_bundle(
                 agent_name=server.agent_name,
                 session_bundle=None,
                 session_id=None,
-                runner_id=server.runner_id,
+                runner_id=None,
             )
             async for _ in adapter.send("Say hello briefly."):
                 pass
@@ -322,7 +326,7 @@ def test_headless_prompt_without_bundle_uses_sessions_api(
                 prompt="Say hello briefly.",
                 session_bundle=None,
                 session_bundle_filename="agent.tar.gz",
-                runner_id=server.runner_id,
+                runner_id=None,
             )
 
     result = asyncio.run(_one_shot())
@@ -350,9 +354,82 @@ def test_run_one_shot_without_bundle_answers(
         agent_name=server.agent_name,
         tool_handler=None,
         prompt="Say hello briefly.",
-        runner_id=server.runner_id,
+        # What _chat_with_server passes for a URL target.
+        runner_id=None,
         session_bundle=None,
     )
 
     out = capsys.readouterr().out
     assert server.marker in out, f"Expected {server.marker!r} on stdout. Got: {out!r}"
+
+
+# ---------------------------------------------------------------------------
+# Contracts the remote-URL path depends on
+# ---------------------------------------------------------------------------
+
+
+def test_json_create_returns_full_session_snapshot(
+    registered_agent_server: _RegisteredAgentServer,
+) -> None:
+    """The JSON create route returns a full snapshot, not just an id.
+
+    ``create_from_agent_id`` parses the POST response directly with
+    ``Session.from_dict`` and skips the follow-up ``GET`` that the multipart
+    ``create`` needs.  If the server ever narrowed this route to
+    ``{"session_id": ...}`` that parse would break, so pin the shape.
+    """
+    server = registered_agent_server
+
+    with server.client() as client:
+        resp = client.post(
+            "/v1/sessions",
+            json={"agent_id": server.agent_id()},
+            headers={"Origin": OMNIGENT_INTERNAL_WS_ORIGIN},
+        )
+        resp.raise_for_status()
+        body = resp.json()
+
+    for field_name in ("id", "agent_id", "status", "created_at"):
+        assert field_name in body, (
+            f"JSON create response is missing {field_name!r}; "
+            f"Session.from_dict would fail. Got keys: {sorted(body)}"
+        )
+
+
+def test_no_online_runner_reports_actionable_error(
+    registered_agent_server: _RegisteredAgentServer,
+) -> None:
+    """A server with no online runner fails with a message naming the fix.
+
+    A remote client adopts one of the server's online runners.  When the
+    server has none, the turn cannot dispatch, so the error should point at
+    starting a host rather than at the ``--server`` flag the user already used.
+    """
+    from omnigent_client import OmnigentClient
+
+    from omnigent.repl._repl import _SessionsChatReplAdapter
+
+    server = registered_agent_server
+
+    async def _drive() -> None:
+        async with OmnigentClient(base_url=server.base_url) as client:
+            adapter = _SessionsChatReplAdapter(
+                client=client,
+                agent_name=server.agent_name,
+                session_bundle=None,
+                session_id=None,
+                runner_id=None,
+            )
+            # Simulate "server has no online runner" without tearing the real
+            # one down: discovery finds nothing, so binding must fail loudly.
+            adapter._client.sessions.resolve_online_runner = _no_runner  # type: ignore[method-assign]
+            async for _ in adapter.send("hello"):
+                pass
+
+    with pytest.raises(RuntimeError, match="no online runner"):
+        asyncio.run(_drive())
+
+
+async def _no_runner(*, harness: str | None = None) -> str | None:
+    """Stand in for runner discovery on a server with no online runner."""
+    return None

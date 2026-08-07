@@ -314,6 +314,21 @@ class SessionListItem:
         )
 
 
+@dataclass(frozen=True)
+class RegisteredAgent:
+    """
+    A server-registered agent resolved by display name.
+
+    :param id: The agent's durable identifier, e.g. ``"ag_abc123"``.
+    :param harness: Harness the agent runs on, e.g.
+        ``"openai-agents"``. ``None`` when the server did not report
+        one.
+    """
+
+    id: str
+    harness: str | None = None
+
+
 class SessionsNamespace:
     """
     Client namespace for ``/v1/sessions`` endpoints.
@@ -447,9 +462,9 @@ class SessionsNamespace:
         created = require_json_object(resp, "POST /v1/sessions")
         return Session.from_dict(created)
 
-    async def resolve_agent_id(self, agent_name: str) -> str:
+    async def resolve_agent(self, agent_name: str) -> RegisteredAgent:
         """
-        Resolve a registered agent's durable id from its display name.
+        Resolve a registered agent's id and harness from its display name.
 
         Used by clients that only know the name the user picked — the
         remote-URL chat picker lists names, but session creation binds
@@ -461,11 +476,14 @@ class SessionsNamespace:
         still resolves.
 
         :param agent_name: Agent display name, e.g. ``"hello_world"``.
-        :returns: The matching agent's durable id.
+        :returns: The matching agent's id and advertised harness.
         :raises OmnigentError: If the listing returns a non-2xx status.
         :raises LookupError: If no registered agent has that name.
         """
+        # Cap the miss-path name list: a large deployment should not
+        # build thousands of names just to render one error message.
         names: list[str] = []
+        truncated = False
         after: str | None = None
         while True:
             params: dict[str, str | int] = {"limit": 1000}
@@ -480,18 +498,76 @@ class SessionsNamespace:
                     continue
                 name = item.get("name")
                 if name == agent_name:
-                    return str(item["id"])
+                    harness = item.get("harness")
+                    return RegisteredAgent(
+                        id=str(item["id"]),
+                        harness=str(harness) if isinstance(harness, str) else None,
+                    )
                 if isinstance(name, str):
-                    names.append(name)
+                    if len(names) < 50:
+                        names.append(name)
+                    else:
+                        truncated = True
             if not listing.get("has_more"):
                 break
             last_id = listing.get("last_id")
             if not last_id:
                 break
             after = str(last_id)
+        available = ", ".join(names) + (", …" if truncated else "")
         raise LookupError(
-            f"No agent named {agent_name!r} is registered on this server. Available: {names}"
+            f"No agent named {agent_name!r} is registered on this server. Available: {available}"
         )
+
+    async def resolve_agent_id(self, agent_name: str) -> str:
+        """
+        Resolve a registered agent's durable id from its display name.
+
+        Thin wrapper over :meth:`resolve_agent` for callers that only
+        need the id.
+
+        :param agent_name: Agent display name, e.g. ``"hello_world"``.
+        :returns: The matching agent's durable id.
+        :raises OmnigentError: If the listing returns a non-2xx status.
+        :raises LookupError: If no registered agent has that name.
+        """
+        return (await self.resolve_agent(agent_name)).id
+
+    async def resolve_online_runner(self, *, harness: str | None = None) -> str | None:
+        """
+        Find an online runner on the server that can drive *harness*.
+
+        A remote-URL client has no local runner of its own, but the
+        session still needs one bound before a turn can dispatch.
+        ``GET /v1/runners`` lists the online runners owned by the
+        requesting user along with the harnesses each advertises, so
+        the client can bind to one the server already has.
+
+        :param harness: Harness the session needs, e.g.
+            ``"openai-agents"``. ``None`` accepts any online runner.
+        :returns: A matching runner id, or ``None`` when the server has
+            no online runner that advertises *harness*.
+        :raises OmnigentError: If the listing returns a non-2xx status.
+        """
+        resp = await self._http.get(f"{self._base}/v1/runners")
+        raise_for_status(resp.status_code, response_body(resp))
+        listing = require_json_object(resp, "GET /v1/runners")
+        data = listing.get("data", [])
+        # Prefer a runner that advertises the harness; fall back to any
+        # online runner that didn't report its harness list at all.
+        unknown_harness: str | None = None
+        for item in data if isinstance(data, list) else []:
+            if not isinstance(item, dict) or not item.get("online"):
+                continue
+            runner_id = item.get("runner_id")
+            if not isinstance(runner_id, str) or not runner_id:
+                continue
+            advertised = item.get("harnesses")
+            if not isinstance(advertised, list):
+                unknown_harness = unknown_harness or runner_id
+            elif harness is None or harness in advertised:
+                return runner_id
+        return unknown_harness
 
     async def list(
         self,

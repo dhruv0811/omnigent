@@ -1719,6 +1719,9 @@ class _SessionsChatReplAdapter:
 
         The remote-URL path: there is no local bundle to upload, so
         resolve the picked name to its id and use the JSON create route.
+        A remote client also has no runner of its own, so adopt one the
+        server already has online — otherwise the first turn fails the
+        runner-binding precondition.
 
         :param pending_debug: Whether to emit adapter debug lines.
         :returns: None.
@@ -1729,7 +1732,18 @@ class _SessionsChatReplAdapter:
                 file=sys.stderr,
                 flush=True,
             )
-        agent_id = self._agent_id or await self._client.sessions.resolve_agent_id(self._agent_name)
+        agent = await self._client.sessions.resolve_agent(self._agent_name)
+        agent_id = self._agent_id or agent.id
+        if self._runner_id is None:
+            self._runner_id = await self._client.sessions.resolve_online_runner(
+                harness=agent.harness
+            )
+            if pending_debug:
+                print(
+                    f"[sessions-adapter] adopted server runner {self._runner_id!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         # Snapshot the pre-create /model pick before hydration clobbers
         # it; applied after create since create has no such field.
         pending_model_override = self._model_override
@@ -1861,6 +1875,14 @@ class _SessionsChatReplAdapter:
             if self._session_id is None:
                 raise RuntimeError("Cannot bind runner before a session exists")
             if self._runner_id is None:
+                if self._session_bundle is None:
+                    # Remote target: we tried to adopt one of the server's
+                    # online runners at create time and found none.
+                    raise RuntimeError(
+                        "This server has no online runner to run the turn. Start one "
+                        "against it with `omnigent host --server <url>` (or run the "
+                        "agent locally with `omnigent run <agent.yaml>`), then retry."
+                    )
                 raise RuntimeError(
                     "Sessions API dispatch requires a registered runner id. "
                     "Start through `omnigent run <agent>` or pass --server so the CLI "

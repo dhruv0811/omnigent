@@ -28,6 +28,7 @@ import httpx
 import yaml
 from omnigent_client import (
     OmnigentClient,
+    RegisteredAgent,
     SessionToolCallInfo,
     ToolCallable,
     ToolCallInfo,
@@ -2086,6 +2087,19 @@ async def _query_sessions_once(
     """
     from omnigent_client import SessionsChat
 
+    # Remote target: no local bundle means no local runner either, so
+    # adopt one the server already has online before the dispatch
+    # precondition is checked.
+    agent: RegisteredAgent | None = None
+    if runner_id is None and session_bundle is None:
+        agent = await client.sessions.resolve_agent(agent_name)
+        runner_id = await client.sessions.resolve_online_runner(harness=agent.harness)
+        if runner_id is None:
+            raise RuntimeError(
+                "This server has no online runner to run the turn. Start one against "
+                "it with `omnigent host --server <url>` (or run the agent locally "
+                "with `omnigent run <agent.yaml>`), then retry."
+            )
     if runner_id is None:
         raise RuntimeError(
             "Sessions API headless prompt requires a registered runner id. "
@@ -2103,9 +2117,9 @@ async def _query_sessions_once(
         if session_bundle is None:
             # Remote target: the agent is registered server-side, so
             # bind by id rather than uploading a bundle we don't have.
-            agent_id = await client.sessions.resolve_agent_id(agent_name)
+            agent = agent or await client.sessions.resolve_agent(agent_name)
             created = await client.sessions.create_from_agent_id(
-                agent_id,
+                agent.id,
                 workspace=os.getcwd(),
             )
         else:

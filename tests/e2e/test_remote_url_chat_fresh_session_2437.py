@@ -430,6 +430,61 @@ def test_no_online_runner_reports_actionable_error(
         asyncio.run(_drive())
 
 
-async def _no_runner(*, harness: str | None = None) -> str | None:
+async def _no_runner(
+    *, harness: str | None = None, canonicalize: object | None = None
+) -> str | None:
     """Stand in for runner discovery on a server with no online runner."""
     return None
+
+
+@pytest.mark.parametrize(
+    ("agent_harness", "advertised"),
+    [
+        ("claude", "claude-sdk"),  # agent reports an alias
+        ("claude-sdk", "claude"),  # runner advertises an alias
+    ],
+)
+def test_runner_adoption_matches_harness_aliases(agent_harness: str, advertised: str) -> None:
+    """Runner adoption accepts either spelling of a harness name.
+
+    The server canonicalizes harness names before matching a runner
+    (``_runner_supports_harness``), so the client must too: an agent whose spec
+    says ``claude`` has to match a runner advertising ``claude-sdk``, or a
+    compatible runner looks absent and the turn fails with "no online runner".
+    """
+    import json
+
+    from omnigent_client._sessions import SessionsNamespace
+
+    from omnigent.harness_aliases import canonicalize_harness
+
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, harnesses: list[str]) -> None:
+            self.text = json.dumps(
+                {"data": [{"runner_id": "r1", "online": True, "harnesses": harnesses}]}
+            )
+
+        def json(self) -> object:
+            return json.loads(self.text)
+
+    class _Http:
+        def __init__(self, harnesses: list[str]) -> None:
+            self._harnesses = harnesses
+
+        async def get(self, *_args: object, **_kwargs: object) -> _Resp:
+            return _Resp(self._harnesses)
+
+    namespace = SessionsNamespace(_Http([advertised]), "http://example")  # type: ignore[arg-type]
+
+    async def _resolve(canonicalize: object) -> str | None:
+        return await namespace.resolve_online_runner(
+            harness=agent_harness,
+            canonicalize=canonicalize,  # type: ignore[arg-type]
+        )
+
+    assert asyncio.run(_resolve(lambda name: canonicalize_harness(name) or name)) == "r1"
+    # Without canonicalization the alias would not match at all — the bug this guards.
+    assert asyncio.run(_resolve(None)) is None

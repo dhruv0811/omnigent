@@ -26,6 +26,7 @@ from omnigent_client import (
     OmnigentClient,
     OmnigentError,
     ReasoningBlock,
+    RegisteredAgent,
     ResponseEndBlock,
     ResponseStartBlock,
     Session,
@@ -1732,11 +1733,20 @@ class _SessionsChatReplAdapter:
                 file=sys.stderr,
                 flush=True,
             )
-        agent = await self._client.sessions.resolve_agent(self._agent_name)
-        agent_id = self._agent_id or agent.id
+        # Skip the name lookup only when nothing needs it: we already know
+        # the id, and a bound runner means we don't need the harness either.
+        agent: RegisteredAgent | None = None
+        if self._agent_id is None or self._runner_id is None:
+            agent = await self._client.sessions.resolve_agent(self._agent_name)
+        agent_id = self._agent_id or (agent.id if agent is not None else None)
+        if agent_id is None:
+            raise RuntimeError(f"Could not resolve an agent id for {self._agent_name!r}")
         if self._runner_id is None:
+            from omnigent.harness_aliases import canonicalize_harness
+
             self._runner_id = await self._client.sessions.resolve_online_runner(
-                harness=agent.harness
+                harness=agent.harness if agent is not None else None,
+                canonicalize=lambda name: canonicalize_harness(name) or name,
             )
             if pending_debug:
                 print(

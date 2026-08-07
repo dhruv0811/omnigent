@@ -24,7 +24,7 @@ from __future__ import annotations
 import builtins
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -519,21 +519,12 @@ class SessionsNamespace:
             f"No agent named {agent_name!r} is registered on this server. Available: {available}"
         )
 
-    async def resolve_agent_id(self, agent_name: str) -> str:
-        """
-        Resolve a registered agent's durable id from its display name.
-
-        Thin wrapper over :meth:`resolve_agent` for callers that only
-        need the id.
-
-        :param agent_name: Agent display name, e.g. ``"hello_world"``.
-        :returns: The matching agent's durable id.
-        :raises OmnigentError: If the listing returns a non-2xx status.
-        :raises LookupError: If no registered agent has that name.
-        """
-        return (await self.resolve_agent(agent_name)).id
-
-    async def resolve_online_runner(self, *, harness: str | None = None) -> str | None:
+    async def resolve_online_runner(
+        self,
+        *,
+        harness: str | None = None,
+        canonicalize: Callable[[str], str] | None = None,
+    ) -> str | None:
         """
         Find an online runner on the server that can drive *harness*.
 
@@ -545,6 +536,11 @@ class SessionsNamespace:
 
         :param harness: Harness the session needs, e.g.
             ``"openai-agents"``. ``None`` accepts any online runner.
+        :param canonicalize: Optional harness-name normalizer applied to
+            both sides of the comparison, so a spec spelling that is an
+            alias (``"claude"``) still matches a runner advertising the
+            canonical name (``"claude-sdk"``). Mirrors the server's own
+            matching. ``None`` compares the names as given.
         :returns: A matching runner id, or ``None`` when the server has
             no online runner that advertises *harness*.
         :raises OmnigentError: If the listing returns a non-2xx status.
@@ -553,6 +549,10 @@ class SessionsNamespace:
         raise_for_status(resp.status_code, response_body(resp))
         listing = require_json_object(resp, "GET /v1/runners")
         data = listing.get("data", [])
+        # Accept either spelling on either side, as the server does.
+        wanted = {harness} if harness is not None else set()
+        if harness is not None and canonicalize is not None:
+            wanted.add(canonicalize(harness))
         # Prefer a runner that advertises the harness; fall back to any
         # online runner that didn't report its harness list at all.
         unknown_harness: str | None = None
@@ -565,7 +565,13 @@ class SessionsNamespace:
             advertised = item.get("harnesses")
             if not isinstance(advertised, list):
                 unknown_harness = unknown_harness or runner_id
-            elif harness is None or harness in advertised:
+                continue
+            if not wanted:
+                return runner_id
+            names = {name for name in advertised if isinstance(name, str)}
+            if canonicalize is not None:
+                names |= {canonicalize(name) for name in names}
+            if wanted & names:
                 return runner_id
         return unknown_harness
 

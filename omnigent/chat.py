@@ -2093,7 +2093,10 @@ async def _query_sessions_once(
     agent: RegisteredAgent | None = None
     if runner_id is None and session_bundle is None:
         agent = await client.sessions.resolve_agent(agent_name)
-        runner_id = await client.sessions.resolve_online_runner(harness=agent.harness)
+        runner_id = await client.sessions.resolve_online_runner(
+            harness=agent.harness,
+            canonicalize=lambda name: canonicalize_harness(name) or name,
+        )
         if runner_id is None:
             raise RuntimeError(
                 "This server has no online runner to run the turn. Start one against "

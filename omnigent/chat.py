@@ -3812,35 +3812,29 @@ def _run_one_shot(
             headers=_server_headers(runner_id=runner_id),
             auth=_server_auth(server_url=base_url),
         ) as client:
-            if session_bundle is not None:
-                text = await _query_sessions_once(
-                    client=client,
-                    agent_name=agent_name,
-                    tool_handler=tool_handler,
-                    prompt=prompt,
-                    session_bundle=session_bundle,
-                    session_bundle_filename=session_bundle_filename,
-                    runner_id=runner_id,
-                    resume_conversation_id=resume_conversation_id,
-                    on_session_ready=(
-                        lambda session_id: open_conversation_link_if_enabled(
-                            base_url=base_url,
-                            conversation_id=session_id,
-                            enabled=auto_open_conversation,
-                            warn=lambda message: click.echo(message, err=True),
-                        )
-                    ),
-                )
-                if text:
-                    click.echo(text)
-                return
-            result = await client.query(
-                model=agent_name,
-                input=prompt,
+            # Both a local bundle and a remote registered agent go through
+            # the sessions API; _query_sessions_once picks the create route
+            # from whether a bundle was supplied.
+            text = await _query_sessions_once(
+                client=client,
+                agent_name=agent_name,
                 tool_handler=tool_handler,
+                prompt=prompt,
+                session_bundle=session_bundle,
+                session_bundle_filename=session_bundle_filename,
+                runner_id=runner_id,
+                resume_conversation_id=resume_conversation_id,
+                on_session_ready=(
+                    lambda session_id: open_conversation_link_if_enabled(
+                        base_url=base_url,
+                        conversation_id=session_id,
+                        enabled=auto_open_conversation,
+                        warn=lambda message: click.echo(message, err=True),
+                    )
+                ),
             )
-            if result.text:
-                click.echo(result.text)
+            if text:
+                click.echo(text)
 
     try:
         asyncio.run(_main())

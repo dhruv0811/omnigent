@@ -328,3 +328,31 @@ def test_headless_prompt_without_bundle_uses_sessions_api(
     result = asyncio.run(_one_shot())
     assert result is not None, "headless one-shot returned no text"
     assert server.marker in result, f"Expected {server.marker!r} in output. Got: {result!r}"
+
+
+def test_run_one_shot_without_bundle_answers(
+    registered_agent_server: _RegisteredAgentServer,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``run --server <url> -p`` answers without a local bundle.
+
+    ``_chat_with_server`` routes ``-p`` through ``_run_one_shot``, a
+    separate entry point from ``_run_headless_prompt``.  It also used to
+    require a bundle and fall back to the legacy client query, so a
+    remote-URL one-shot failed with ``Not Found``.
+    """
+    from omnigent.chat import _run_one_shot
+
+    server = registered_agent_server
+
+    _run_one_shot(
+        base_url=server.base_url,
+        agent_name=server.agent_name,
+        tool_handler=None,
+        prompt="Say hello briefly.",
+        runner_id=server.runner_id,
+        session_bundle=None,
+    )
+
+    out = capsys.readouterr().out
+    assert server.marker in out, f"Expected {server.marker!r} on stdout. Got: {out!r}"

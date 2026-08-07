@@ -6970,7 +6970,10 @@ def _dispatch_run(
         )
 
     if target is None:
-        if server_from_cli and server is not None and harness is None:
+        # Truthiness, not ``is not None``: an empty ``--server ""`` selects local
+        # mode (see ``_ensure_backend``), so it must not be treated as a direct
+        # server URL and normalized into the bare scheme ``"https:"``.
+        if server_from_cli and server and harness is None:
             # Normalize like every other entry point: expand a bare workspace
             # URL to its /api/2.0/omnigent mount and strip any ?o= query. Else
             # a direct ``--server`` request hits the root and bounces to /login.
@@ -7484,6 +7487,17 @@ def run(
     # global config, which provides user-level defaults.
     server_source = click.get_current_context().get_parameter_source("server")
     server_from_cli = server_source is not None and server_source.name == "COMMANDLINE"
+    # ``--server ""`` is the documented "ignore any configured remote and target
+    # a local server" request. Collapse it to the ``None`` local-mode sentinel
+    # every downstream consumer already understands, and remember that it was
+    # explicit so the config fallback below cannot put the remote back. Without
+    # this, the empty string flowed on as a real server value and normalized to
+    # the bare scheme ``"https:"``, which then landed in the AGENT slot and
+    # failed as "Agent path not found: https:".
+    local_server_requested = server_from_cli and server == ""
+    if local_server_requested:
+        server = None
+        server_from_cli = False
     model_source = click.get_current_context().get_parameter_source("model")
     model_from_cli = model_source is click.core.ParameterSource.COMMANDLINE
     harness_source = click.get_current_context().get_parameter_source("harness")
@@ -7500,7 +7514,7 @@ def run(
     direct_server_cli = (
         target is None
         and server_from_cli
-        and server is not None
+        and bool(server)
         and not harness_from_cli
         and acp_agent is None
     )
@@ -7513,7 +7527,7 @@ def run(
         # it — but fall back to a built-in launcher when an explicit --harness
         # doesn't match the default agent's harness.
         target = _resolve_default_agent_target(_global_cfg.get("default_agent"), harness)
-    if server is None:
+    if server is None and not local_server_requested:
         server = _global_cfg.get("server")
     if model is None and not direct_server_cli:
         model = _global_cfg.get("model")
@@ -10380,8 +10394,18 @@ def _resolve_server_url(server: str) -> str:
         ``"example.cloud.databricks.com/omnigent"``.
     :returns: The normalized API base URL without a trailing slash, e.g.
         ``"https://example.cloud.databricks.com/api/2.0/omnigent"``.
+    :raises click.ClickException: If *server* is empty or whitespace-only.
+        Callers select local mode with a falsy value instead (see
+        ``_ensure_backend``); normalizing it here would yield the bare scheme
+        ``"https:"`` and strand the caller on a nonsense URL.
     """
     from omnigent.conversation_browser import display_server_url, strip_conversation_path
+
+    if not server.strip():
+        raise click.ClickException(
+            "--server was given an empty value where a URL is required. "
+            'Omit --server (or pass --server "") to use a local server.'
+        )
 
     # A URL copied from the browser while a conversation is open carries the
     # SPA's ``/c/<id>`` route. The SPA catch-all answers any GET under it with

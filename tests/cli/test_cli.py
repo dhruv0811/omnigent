@@ -43,6 +43,7 @@ from omnigent.cli import (
     _resolve_bundle_env_vars,
     _resolve_default_agent_target,
     _resolve_first_run_plan,
+    _resolve_server_url,
     _save_global_config,
     _save_local_config,
     _server_uvicorn_log_config,
@@ -3751,6 +3752,78 @@ def test_run_server_without_agent_dispatches_direct_server(
         # including for remote servers.
         auto_open_conversation=True,
     )
+
+
+def test_run_empty_server_uses_local_mode_over_configured_remote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``run AGENT --server ""`` targets a local server, not the configured one.
+
+    An empty ``--server`` is the documented way to ask for a local server
+    ("auto-spawn a persistent local server ... instead of a remote one"), so it
+    has to beat the ``server`` config default rather than fall back to it.
+    ``run_chat`` gets ``server_url=None``, the sentinel ``_ensure_backend``
+    reads as local mode.
+    """
+    monkeypatch.setattr(
+        "omnigent.cli._load_effective_config",
+        lambda *_a, **_kw: {"server": "https://configured.example.com"},
+    )
+    run_chat = Mock()
+    monkeypatch.setattr("omnigent.chat.run_chat", run_chat)
+
+    result = CliRunner().invoke(
+        cli, ["run", "tests/resources/examples/hello_world.yaml", "--server", ""]
+    )
+
+    assert result.exit_code == 0, result.output
+    kwargs = run_chat.call_args.kwargs
+    assert kwargs["target"] == "tests/resources/examples/hello_world.yaml"
+    assert kwargs["server_url"] is None
+
+
+def test_run_empty_server_without_agent_is_not_a_direct_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``run --server ""`` (no AGENT) resolves the default agent locally.
+
+    Regression: the no-AGENT direct-server branch gated on ``server is not
+    None``, so an empty ``--server`` was misread as a direct server URL and
+    normalized to the bare scheme ``"https:"``. That string is not
+    ``_is_url``-shaped, so it was then taken for an agent path and the run died
+    with "Agent path not found: https:" — while a configured remote silently
+    replaced the local server the user asked for.
+    """
+    monkeypatch.setattr(
+        "omnigent.cli._load_effective_config",
+        lambda *_a, **_kw: {
+            "server": "https://configured.example.com",
+            "default_agent": "tests/resources/examples/hello_world.yaml",
+        },
+    )
+    run_chat = Mock()
+    monkeypatch.setattr("omnigent.chat.run_chat", run_chat)
+
+    result = CliRunner().invoke(cli, ["run", "--server", ""])
+
+    assert result.exit_code == 0, result.output
+    kwargs = run_chat.call_args.kwargs
+    # The bug put the bogus normalized URL in the AGENT slot.
+    assert kwargs["target"] == "tests/resources/examples/hello_world.yaml"
+    assert kwargs["server_url"] is None
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_resolve_server_url_rejects_empty_value(value: str) -> None:
+    """An empty ``--server`` value fails loud instead of yielding ``"https:"``.
+
+    Normalizing an empty string used to produce the bare scheme ``"https:"``
+    (``https://`` from the default-scheme step, then trailing-slash-trimmed),
+    which every caller then treated as a real URL. Callers select local mode
+    with a falsy value and must never route it here.
+    """
+    with pytest.raises(ClickException, match="empty value"):
+        _resolve_server_url(value)
 
 
 def test_run_server_resume_by_id_forwards_to_run_attach(

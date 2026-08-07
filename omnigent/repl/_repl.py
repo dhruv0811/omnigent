@@ -1684,85 +1684,11 @@ class _SessionsChatReplAdapter:
         async with self._ensure_session_lock:
             if self._session_id is not None and self._stream_task is not None:
                 return self._session_id
-            if self._session_id is None and self._session_bundle is None:
-                # Connected to a remote server, so there is no local bundle to
-                # upload: the agent is already registered there. Bind the new
-                # session to it by id through the JSON create route.
-                if _dbg:
-                    print(
-                        "[sessions-adapter] POST /v1/sessions json agent_id",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                agent_id = self._agent_id or await self._client.sessions.resolve_agent_id(
-                    self._agent_name
-                )
-                session = await self._client.sessions.create_from_agent_id(
-                    agent_id,
-                    reasoning_effort=self._reasoning_effort,
-                    workspace=os.getcwd(),
-                )
-                self._session_id = session.id
-                self._hydrate_from_session_snapshot(session)
-                if _dbg:
-                    print(
-                        f"[sessions-adapter] session created id={self._session_id!r}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-            elif self._session_id is None:
-                if _dbg:
-                    print(
-                        "[sessions-adapter] POST /v1/sessions multipart bundle",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                # Snapshot pre-create /model pick before hydration
-                # clobbers it; PATCHed below since create() has no
-                # model_override metadata field.
-                pending_model_override = self._model_override
-                session = await self._client.sessions.create(
-                    self._session_bundle,
-                    filename=self._session_bundle_filename,
-                    reasoning_effort=self._reasoning_effort,
-                    # Record the user's terminal cwd so the Web UI
-                    # can show "running locally in <workspace>" for
-                    # CLI sessions. Doesn't drive any behavior —
-                    # CLI sessions don't bind to a host_id, so the
-                    # ck_conversations_workspace_required_for_host
-                    # constraint isn't active.
-                    workspace=os.getcwd(),
-                )
-                self._session_id = session.id
-                self._hydrate_from_session_snapshot(session)
-                if pending_model_override is not None and session.model_override is None:
-                    # PATCH the pre-session ``/model`` pick so the
-                    # first event picks it up via conv.model_override.
-                    # ``silent`` skips the tmux ``/model`` forward —
-                    # the user already typed the command locally; we
-                    # don't want a second copy injected into the pane.
-                    try:
-                        patched = await self._client.sessions.set_model_override(
-                            self._session_id,
-                            model_override=pending_model_override,
-                            silent=True,
-                        )
-                        self._model_override = patched.model_override
-                    except Exception:  # noqa: BLE001 — REPL boundary; log and clear
-                        _log.warning(
-                            "Failed to apply pending /model=%r to session %s; "
-                            "clearing local cache.",
-                            pending_model_override,
-                            self._session_id,
-                            exc_info=True,
-                        )
-                        self._model_override = None
-                if _dbg:
-                    print(
-                        f"[sessions-adapter] session created id={self._session_id!r}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+            if self._session_id is None:
+                if self._session_bundle is not None:
+                    await self._create_session_from_bundle(pending_debug=_dbg)
+                else:
+                    await self._create_session_from_registered_agent(pending_debug=_dbg)
             else:
                 if _dbg:
                     print(
@@ -1784,7 +1710,121 @@ class _SessionsChatReplAdapter:
                     name=f"sessions-adapter-recover-{self._session_id}",
                 )
             self._notify_session_start_once()
+            assert self._session_id is not None
             return self._session_id
+
+    async def _create_session_from_registered_agent(self, *, pending_debug: bool) -> None:
+        """
+        Create a session bound to an agent already registered server-side.
+
+        The remote-URL path: there is no local bundle to upload, so
+        resolve the picked name to its id and use the JSON create route.
+
+        :param pending_debug: Whether to emit adapter debug lines.
+        :returns: None.
+        """
+        if pending_debug:
+            print(
+                "[sessions-adapter] POST /v1/sessions json agent_id",
+                file=sys.stderr,
+                flush=True,
+            )
+        agent_id = self._agent_id or await self._client.sessions.resolve_agent_id(self._agent_name)
+        # Snapshot the pre-create /model pick before hydration clobbers
+        # it; applied after create since create has no such field.
+        pending_model_override = self._model_override
+        session = await self._client.sessions.create_from_agent_id(
+            agent_id,
+            reasoning_effort=self._reasoning_effort,
+            workspace=os.getcwd(),
+        )
+        self._session_id = session.id
+        self._hydrate_from_session_snapshot(session)
+        await self._apply_pending_model_override(pending_model_override, session)
+        if pending_debug:
+            print(
+                f"[sessions-adapter] session created id={self._session_id!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    async def _create_session_from_bundle(self, *, pending_debug: bool) -> None:
+        """
+        Create a session by uploading the local agent bundle.
+
+        :param pending_debug: Whether to emit adapter debug lines.
+        :returns: None.
+        :raises RuntimeError: If called with no bundle available.
+        """
+        if self._session_bundle is None:
+            raise RuntimeError("Cannot create a bundled session without a bundle")
+        if pending_debug:
+            print(
+                "[sessions-adapter] POST /v1/sessions multipart bundle",
+                file=sys.stderr,
+                flush=True,
+            )
+        # Snapshot the pre-create /model pick before hydration clobbers
+        # it; applied after create since create has no such field.
+        pending_model_override = self._model_override
+        session = await self._client.sessions.create(
+            self._session_bundle,
+            filename=self._session_bundle_filename,
+            reasoning_effort=self._reasoning_effort,
+            # Record the user's terminal cwd so the Web UI can show
+            # "running locally in <workspace>" for CLI sessions. Doesn't
+            # drive any behavior — CLI sessions don't bind to a host_id,
+            # so the ck_conversations_workspace_required_for_host
+            # constraint isn't active.
+            workspace=os.getcwd(),
+        )
+        self._session_id = session.id
+        self._hydrate_from_session_snapshot(session)
+        await self._apply_pending_model_override(pending_model_override, session)
+        if pending_debug:
+            print(
+                f"[sessions-adapter] session created id={self._session_id!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    async def _apply_pending_model_override(
+        self, pending_model_override: str | None, session: _SessionSnapshot
+    ) -> None:
+        """
+        Apply a pre-session ``/model`` pick to a freshly created session.
+
+        Neither create route carries a ``model_override`` field, so a
+        ``/model`` typed before the first turn has to be PATCHed after
+        create for the first event to pick it up via
+        ``conv.model_override``. ``silent`` skips the tmux ``/model``
+        forward: the user already typed the command locally and we don't
+        want a second copy injected into the pane.
+
+        :param pending_model_override: The pick captured before create,
+            e.g. ``"opus"``. ``None`` is a no-op.
+        :param session: The created session snapshot.
+        :returns: None.
+        """
+        if pending_model_override is None or session.model_override is not None:
+            return
+        if self._session_id is None:
+            return
+        try:
+            patched = await self._client.sessions.set_model_override(
+                self._session_id,
+                model_override=pending_model_override,
+                silent=True,
+            )
+            self._model_override = patched.model_override
+        except Exception:  # noqa: BLE001 — REPL boundary; log and clear
+            _log.warning(
+                "Failed to apply pending /model=%r to session %s; clearing local cache.",
+                pending_model_override,
+                self._session_id,
+                exc_info=True,
+            )
+            self._model_override = None
 
     def _notify_session_start_once(self) -> None:
         """

@@ -453,26 +453,42 @@ class SessionsNamespace:
 
         Used by clients that only know the name the user picked — the
         remote-URL chat picker lists names, but session creation binds
-        by id.
+        by id. ``GET /v1/agents`` lists only server-registered
+        (``session_id IS NULL``) agents, so a session-scoped agent is
+        not resolvable this way and raises ``LookupError``.
+
+        Follows the listing cursor, so an agent past the first page
+        still resolves.
 
         :param agent_name: Agent display name, e.g. ``"hello_world"``.
         :returns: The matching agent's durable id.
         :raises OmnigentError: If the listing returns a non-2xx status.
         :raises LookupError: If no registered agent has that name.
         """
-        resp = await self._http.get(f"{self._base}/v1/agents", params={"limit": 100})
-        raise_for_status(resp.status_code, response_body(resp))
-        listing = require_json_object(resp, "GET /v1/agents")
-        data = listing.get("data", [])
         names: list[str] = []
-        for item in data if isinstance(data, list) else []:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name")
-            if name == agent_name:
-                return str(item["id"])
-            if isinstance(name, str):
-                names.append(name)
+        after: str | None = None
+        while True:
+            params: dict[str, str | int] = {"limit": 1000}
+            if after is not None:
+                params["after"] = after
+            resp = await self._http.get(f"{self._base}/v1/agents", params=params)
+            raise_for_status(resp.status_code, response_body(resp))
+            listing = require_json_object(resp, "GET /v1/agents")
+            data = listing.get("data", [])
+            for item in data if isinstance(data, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if name == agent_name:
+                    return str(item["id"])
+                if isinstance(name, str):
+                    names.append(name)
+            if not listing.get("has_more"):
+                break
+            last_id = listing.get("last_id")
+            if not last_id:
+                break
+            after = str(last_id)
         raise LookupError(
             f"No agent named {agent_name!r} is registered on this server. Available: {names}"
         )

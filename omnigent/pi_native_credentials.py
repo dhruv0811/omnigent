@@ -26,6 +26,7 @@ import re
 import shlex
 import subprocess
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple, NotRequired, TypeAlias, TypedDict, TypeGuard
@@ -625,6 +626,43 @@ def _run_auth_command(auth_command: str, *, timeout: float = 15.0) -> str | None
         return None
 
 
+# Entries at or below this need no probe: Pi's own default ceiling is lower, so
+# they cannot exceed any observed serving cap. Skipping them keeps launch fast.
+_CAP_PROBE_FLOOR = 16384
+_CAP_PROBE_WORKERS = 8
+
+
+def _clamp_entries_to_output_caps(
+    workspace_url: str,
+    token: str,
+    entries: list[_PiModelEntry],
+) -> None:
+    """Lower each entry's ``maxTokens`` to the serving endpoint's real cap.
+
+    Omnigent's catalog reports a model's native output ceiling, but a Databricks
+    serving endpoint may enforce a lower per-request cap; Pi would then send the
+    native value and every call fails with 400. The cap is a model property, so
+    a single probe on the MLflow chat surface yields it regardless of which
+    surface the model is finally served on. Best-effort and parallel: any probe
+    failure leaves the catalog value untouched, so a network blip never blocks
+    launch. Re-probing each launch picks up a cap that is later raised.
+    """
+    # ponytail: re-probes every launch; cache by the model-services etag to skip
+    # unchanged endpoints once that field is plumbed through the listing.
+    base_url = f"{workspace_url.rstrip('/')}/ai-gateway/mlflow/v1"
+    targets = [e for e in entries if (e.get("maxTokens") or 0) > _CAP_PROBE_FLOOR]
+    if not targets:
+        return
+
+    def clamp(entry: _PiModelEntry) -> None:
+        cap = model_catalog.probe_output_token_cap(base_url, token, entry["id"])
+        if cap is not None:
+            entry["maxTokens"] = min(entry.get("maxTokens", cap), cap)
+
+    with ThreadPoolExecutor(max_workers=_CAP_PROBE_WORKERS) as pool:
+        list(pool.map(clamp, targets))
+
+
 def _fetch_pi_model_lists(
     workspace_url: str,
     token: str,
@@ -708,6 +746,10 @@ def _fetch_pi_model_lists(
             "pi-native: Unity Catalog model-services returned no LLM models; "
             "Pi will show only the selected model"
         )
+
+    # Claude entries keep their catalog ceiling (already within serving caps);
+    # the OSS/GPT/Gemini surfaces carry the oversized values that 400 at runtime.
+    _clamp_entries_to_output_caps(workspace_url, token, [*gpt_responses, *completions, *gemini])
 
     return claude, gpt_responses, completions, gemini
 

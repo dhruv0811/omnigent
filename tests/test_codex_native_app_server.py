@@ -2445,3 +2445,19 @@ def test_probe_codex_home_bridges_provider_tables_and_credential(
     )
     home = codex_native_app_server._probe_codex_home(['model_provider="Databricks"'])
     assert "https://two.example" in (home / "config.toml").read_text()
+
+    # The credential must track its source too. The home is keyed only by the
+    # overrides, so a source that moves under an unchanged override set leaves
+    # a symlink naming the old home; a removed source leaves it dangling, and
+    # a dangling link reads as present to the bridge, so an unrefreshed home
+    # would probe as logged out forever.
+    moved = tmp_path / "moved-codex"
+    source.rename(moved)
+    monkeypatch.setenv("CODEX_HOME", str(moved))
+
+    home = codex_native_app_server._probe_codex_home(['model_provider="Databricks"'])
+
+    credential = home / ".credentials.json"
+    assert credential.is_symlink()
+    assert credential.resolve() == (moved / ".credentials.json").resolve()
+    assert credential.exists(), "credential symlink must not dangle"

@@ -44,6 +44,7 @@ from omnigent.codex_native_process_registry import (
 )
 from omnigent.inner import _proc
 from omnigent.inner.codex_executor import (
+    _CODEX_HOME_COPY_FILES,
     _CODEX_HOME_SYMLINK_FILES,
     _CODEX_ROUTER_HOOK_MODULE,
     _clean_codex_env,
@@ -884,7 +885,7 @@ def _probe_codex_home(config_overrides: Sequence[str]) -> Path:
     # the first probe's tables; a kept credential symlink would keep naming a
     # source home that has since moved, or dangle if it was removed (a
     # dangling link reads as present here, so it never self-heals).
-    for name in (*_CODEX_HOME_SYMLINK_FILES, "config.toml"):
+    for name in (*_CODEX_HOME_SYMLINK_FILES, *_CODEX_HOME_COPY_FILES):
         with contextlib.suppress(OSError):
             (home / name).unlink(missing_ok=True)
     _populate_codex_home_config(home, _codex_home_config_source_from_env(), minimal_config=True)

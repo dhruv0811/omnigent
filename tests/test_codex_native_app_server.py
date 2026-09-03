@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import stat
 import sys
 from dataclasses import dataclass, field
@@ -2461,3 +2462,25 @@ def test_probe_codex_home_bridges_provider_tables_and_credential(
     assert credential.is_symlink()
     assert credential.resolve() == (moved / ".credentials.json").resolve()
     assert credential.exists(), "credential symlink must not dangle"
+
+    # The permanent case: a removed source leaves the link dangling, and a
+    # dangling link satisfies the bridge's skip test (is_symlink() is True
+    # while exists() is False), so an unrefreshed home could never recover.
+    shutil.rmtree(moved)
+    assert credential.is_symlink() and not credential.exists(), "expected a dangling link"
+
+    fresh = tmp_path / "fresh-codex"
+    fresh.mkdir()
+    (fresh / "config.toml").write_text(
+        'model_provider = "Databricks"\n\n[model_providers.Databricks]\n'
+        'base_url = "https://three.example"\n'
+    )
+    (fresh / ".credentials.json").write_text("{}")
+    monkeypatch.setenv("CODEX_HOME", str(fresh))
+
+    home = codex_native_app_server._probe_codex_home(['model_provider="Databricks"'])
+
+    credential = home / ".credentials.json"
+    assert credential.exists(), "a dangling credential link must self-heal"
+    assert credential.resolve() == (fresh / ".credentials.json").resolve()
+    assert "https://three.example" in (home / "config.toml").read_text()

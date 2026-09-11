@@ -2018,6 +2018,7 @@ export function buildSlashCommandMap(
   showModel: boolean,
   showCompact = true,
   showBtw = false,
+  showSide = false,
   skillPrefix: "/" | "$" = "/",
 ): Record<string, string> {
   const m: Record<string, string> = {};
@@ -2027,6 +2028,8 @@ export function buildSlashCommandMap(
     if (name === "/compact" && !showCompact) continue;
     // /btw is a Claude Code CLI built-in — only offer it on claude-native.
     if (name === "/btw" && !showBtw) continue;
+    // /side is a Codex CLI built-in (ephemeral fork) — only offer it on codex-native.
+    if (name === "/side" && !showSide) continue;
     m[name] = description;
   }
   for (const skill of skills) {
@@ -2055,6 +2058,7 @@ export function buildSlashCommandWithArgsSet(
   showEffort: boolean,
   showModel: boolean,
   showBtw = false,
+  showSide = false,
   skillPrefix: "/" | "$" = "/",
 ): Set<string> {
   const s = new Set<string>();
@@ -2062,6 +2066,8 @@ export function buildSlashCommandWithArgsSet(
   if (showModel) s.add("/model");
   // Selecting /btw fills "/btw " so the user types the side question after it.
   if (showBtw) s.add("/btw");
+  // Selecting /side fills "/side " so the user types the side question after it.
+  if (showSide) s.add("/side");
   for (const skill of skills) s.add(`${skillPrefix}${skill.name}`);
   return s;
 }
@@ -2616,16 +2622,29 @@ function ComposerImpl(
   // vendor TUI (see submit) — the forwarder relays its answer to the overlay.
   const showBtw = sessionHarness === "claude-native";
   const skillPrefix = sessionHarness === "codex-native" ? "$" : "/";
+  // /side is a Codex Code CLI built-in (ephemeral fork side chat), so offer it
+  // only on codex-native sessions. Selected/typed, it sends as plaintext to the
+  // vendor turn path (see submit); the runner opens the fork as a sub-agent chat.
+  const showSide = sessionHarness === "codex-native";
   const slashCommands = useMemo(
-    () => buildSlashCommandMap(skills, showEffort, showModel, showCompact, showBtw, skillPrefix),
-    [skills, showEffort, showModel, showCompact, showBtw, skillPrefix],
+    () =>
+      buildSlashCommandMap(
+        skills,
+        showEffort,
+        showModel,
+        showCompact,
+        showBtw,
+        showSide,
+        skillPrefix,
+      ),
+    [skills, showEffort, showModel, showCompact, showBtw, showSide, skillPrefix],
   );
   // Skills always need an optional argument fill-in so the user can
   // type extra context after the name; built-in commands keep their
   // existing fill/execute split.
   const slashCommandsWithArgs = useMemo(
-    () => buildSlashCommandWithArgsSet(skills, showEffort, showModel, showBtw, skillPrefix),
-    [skills, showEffort, showModel, showBtw, skillPrefix],
+    () => buildSlashCommandWithArgsSet(skills, showEffort, showModel, showBtw, showSide, skillPrefix),
+    [skills, showEffort, showModel, showBtw, showSide, skillPrefix],
   );
 
   // Suggest names until a space starts the arguments; exclude file paths.
@@ -3115,7 +3134,7 @@ function ComposerImpl(
       // executed locally. It must reach the vendor TUI as plaintext so Claude
       // Code opens its side chat and the forwarder relays the answer to the
       // web overlay; fall through to the plaintext send path below.
-      if (cmd !== "/btw" && cmd in BUILTIN_SLASH_COMMANDS && cmd in slashCommands) {
+      if (cmd !== "/btw" && cmd !== "/side" && cmd in BUILTIN_SLASH_COMMANDS && cmd in slashCommands) {
         executeSlashCommand(cmd, arg);
         return;
       }

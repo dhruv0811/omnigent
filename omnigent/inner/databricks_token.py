@@ -35,7 +35,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
+
+# Bound the SDK's network (OIDC metadata discovery + token exchange) to parity
+# with the timeout-bounded CLI mint (``--timeout 15s``) and broker (15s). The SDK
+# path is otherwise unbounded; ``Config.__init__``'s metadata probe was observed
+# hanging minutes against an unreachable endpoint, and this runs as an auth
+# command the harness re-runs near token expiry.
+_SDK_NETWORK_TIMEOUT_S = 15.0
 
 
 def _ambient_credential_env_vars() -> set[str]:
@@ -64,28 +72,36 @@ def _sdk_bearer(profile: str | None, host: str | None) -> tuple[str, str] | None
 
     A named *profile* is pinned to its own section: ambient credential env vars
     are scrubbed first so they cannot outrank it. Only the unprofiled path
-    consults env / OIDC. Raises on a genuine SDK error (e.g. an unreachable token
-    endpoint) so :func:`main` can fall through quietly.
+    consults env / OIDC. The network (metadata probe + token exchange) is bounded
+    to ``_SDK_NETWORK_TIMEOUT_S``. Raises on a genuine SDK error (e.g. an
+    unreachable token endpoint) so :func:`main` can fall through quietly.
     """
     from databricks.sdk.config import Config
 
-    if profile:
-        # Pin identity to the profile section: strip ambient DATABRICKS_* creds
-        # (which the SDK would otherwise rank above the profile), mirroring the
-        # CLI mint's ``env -u``.
-        for name in _ambient_credential_env_vars():
-            os.environ.pop(name, None)
-        cfg = Config(profile=profile)
-    else:
-        # Unprofiled: mirror ``databricks auth token --host`` — drop any ambient
-        # profile and pin the SDK to this workspace so env / OIDC
-        # service-principal credentials mint against it.
-        os.environ.pop("DATABRICKS_CONFIG_PROFILE", None)
-        cfg = Config(host=host) if host else Config()
-    auth = cfg.authenticate().get("Authorization", "")
-    if not cfg.host or not auth.startswith("Bearer "):
-        return None
-    return cfg.host, auth[len("Bearer ") :]
+    # Bound network so a slow/unreachable OIDC or token endpoint can't stall this
+    # auth command; restore the prior default so the bound never leaks out.
+    previous_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(_SDK_NETWORK_TIMEOUT_S)
+    try:
+        if profile:
+            # Pin identity to the profile section: strip ambient DATABRICKS_*
+            # creds (which the SDK would otherwise rank above the profile),
+            # mirroring the CLI mint's ``env -u``.
+            for name in _ambient_credential_env_vars():
+                os.environ.pop(name, None)
+            cfg = Config(profile=profile)
+        else:
+            # Unprofiled: mirror ``databricks auth token --host`` — drop any
+            # ambient profile and pin the SDK to this workspace so env / OIDC
+            # service-principal credentials mint against it.
+            os.environ.pop("DATABRICKS_CONFIG_PROFILE", None)
+            cfg = Config(host=host) if host else Config()
+        auth = cfg.authenticate().get("Authorization", "")
+        if not cfg.host or not auth.startswith("Bearer "):
+            return None
+        return cfg.host, auth[len("Bearer ") :]
+    finally:
+        socket.setdefaulttimeout(previous_timeout)
 
 
 def main(argv: list[str] | None = None) -> int:

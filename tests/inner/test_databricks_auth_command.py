@@ -514,3 +514,34 @@ def test_profile_pinning_scrubs_the_ambient_credential_env_vars() -> None:
         "DATABRICKS_CONFIG_PROFILE",
     } <= names
     assert "DATABRICKS_CONFIG_FILE" not in names
+
+
+def test_the_sdk_path_bounds_and_restores_the_network_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SDK metadata probe + token exchange are otherwise unbounded; bound
+    them to parity with the CLI/broker mints (~15s) and restore the prior default
+    so the bound doesn't leak into the caller."""
+    import socket
+
+    import databricks.sdk.config as sdk_config
+
+    from omnigent.inner import databricks_token
+
+    seen: dict[str, float | None] = {}
+
+    class _StubConfig:
+        host = "https://example.databricks.com"
+
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def authenticate(self) -> dict[str, str]:
+            seen["during"] = socket.getdefaulttimeout()
+            return {"Authorization": "Bearer tok"}
+
+    monkeypatch.setattr(sdk_config, "Config", _StubConfig)
+    before = socket.getdefaulttimeout()
+    databricks_token._sdk_bearer(None, "https://example.databricks.com")
+    assert seen["during"] == databricks_token._SDK_NETWORK_TIMEOUT_S
+    assert socket.getdefaulttimeout() == before

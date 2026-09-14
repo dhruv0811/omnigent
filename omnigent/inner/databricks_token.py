@@ -11,14 +11,17 @@ never got a Gateway bearer. The databricks-sdk's ``Config.authenticate()`` does
 the client-credentials exchange (and env / file OIDC and a static PAT), so this
 mints through the SDK rather than reimplementing any OAuth.
 
-Identity is **fail-closed**. A named ``--profile`` is pinned to its own config
-section with no ambient (env / OIDC / ``DEFAULT``-section) fallback, so a missing
-or broken profile prints nothing rather than silently minting some *other*
-identity's token — per-agent attribution is the whole point of M2M. Ambient env
-/ OIDC resolution is used only in the unprofiled ``--host`` mode. In both cases
-the resolved workspace must match the requested ``--host`` (the gateway's
-workspace) before the token is printed, so a profile aimed at a different
-workspace can't hand its bearer to this gateway.
+Identity is **fail-closed and profile-pinned**. The SDK resolves config in the
+order kwargs > environment > profile-section, so ``Config(profile=P)`` alone does
+NOT pin identity: an ambient ``DATABRICKS_TOKEN`` / ``DATABRICKS_CLIENT_ID`` (etc.)
+outranks the named profile's own section and would mint a *different* identity on
+the very hosts this targets (Fargate routinely injects ``DATABRICKS_*``). So the
+profiled branch first scrubs every ambient credential env var (mirroring the CLI
+mint's ``env -u``), leaving the profile section authoritative. Ambient env / OIDC
+is used only in the unprofiled ``--host`` mode. In both cases the token is
+withheld unless the resolved workspace matches the requested ``--host`` (the
+gateway's workspace, an https match), so a profile aimed elsewhere can't hand its
+bearer here.
 
 Prints the bearer on stdout, or nothing (exit 0) on any failure, so the caller's
 shell falls through cleanly — mirroring
@@ -33,31 +36,45 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from urllib.parse import urlsplit
 
 
-def _workspace(host: str | None) -> str:
-    """Normalized network location of *host* (scheme-insensitive, no trailing slash)."""
-    h = (host or "").strip().rstrip("/")
-    if not h:
-        return ""
-    return urlsplit(h if "://" in h else f"https://{h}").netloc.lower()
+def _ambient_credential_env_vars() -> set[str]:
+    """Env vars the databricks-sdk reads into a Config, minus the config-file
+    locator (``DATABRICKS_CONFIG_FILE``, needed to find the profile).
+
+    Enumerated from the SDK's own attribute table so the set stays complete as
+    the SDK gains auth types. Scrubbing these before ``Config(profile=...)``
+    makes a named profile's own section authoritative — the SDK otherwise lets
+    ambient env outrank it (kwargs > env > profile-section).
+    """
+    from databricks.sdk.config import Config
+
+    names: set[str] = set()
+    for attr in Config.attributes():
+        candidates = [attr.env] if getattr(attr, "env", None) else []
+        candidates += list(getattr(attr, "env_aliases", []) or [])
+        for name in candidates:
+            if name and name != "DATABRICKS_CONFIG_FILE":
+                names.add(name)
+    return names
 
 
 def _sdk_bearer(profile: str | None, host: str | None) -> tuple[str, str] | None:
     """Return ``(resolved_host, bearer)`` from the databricks-sdk, or ``None``.
 
-    Fail-closed on identity: a named *profile* is pinned to its own section with
-    no ambient fallback; only the unprofiled path consults env / OIDC. Raises on
-    a genuine SDK error (e.g. an unreachable token endpoint) so :func:`main` can
-    fall through quietly.
+    A named *profile* is pinned to its own section: ambient credential env vars
+    are scrubbed first so they cannot outrank it. Only the unprofiled path
+    consults env / OIDC. Raises on a genuine SDK error (e.g. an unreachable token
+    endpoint) so :func:`main` can fall through quietly.
     """
     from databricks.sdk.config import Config
 
     if profile:
-        # Pinned identity: the profile's own section only. Unlike the executor's
-        # _read_databrickscfg, this does NOT retry with ambient credentials on a
-        # resolution failure — a broken named profile must not mint as someone else.
+        # Pin identity to the profile section: strip ambient DATABRICKS_* creds
+        # (which the SDK would otherwise rank above the profile), mirroring the
+        # CLI mint's ``env -u``.
+        for name in _ambient_credential_env_vars():
+            os.environ.pop(name, None)
         cfg = Config(profile=profile)
     else:
         # Unprofiled: mirror ``databricks auth token --host`` — drop any ambient
@@ -77,25 +94,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host")
     args, _ = parser.parse_known_args(argv)
     try:
-        resolved = _sdk_bearer(args.profile or None, args.host)
+        import databricks.sdk.config  # noqa: F401 - the `databricks` extra is required to mint
     except ImportError:
-        # databricks-sdk lives in the `databricks` extra; a base install can't
-        # mint M2M. Hint on stderr (stdout stays the token channel) so this is
-        # debuggable rather than a silent no-op.
+        # Base install without the extra can't mint M2M. Hint on stderr (stdout
+        # stays the token channel) so this is debuggable, not a silent no-op.
+        # Scoped to the SDK import so an optional-dep ImportError from inside
+        # authenticate() is not misattributed.
         sys.stderr.write(
             "omnigent.inner.databricks_token: databricks-sdk is not installed; "
             "install the 'databricks' extra to mint M2M / service-principal tokens.\n"
         )
         return 0
+    try:
+        resolved = _sdk_bearer(args.profile or None, args.host)
     except Exception:  # noqa: BLE001 - a fallback must never emit noise; fall through.
         return 0
     if resolved is None:
         return 0
     resolved_host, bearer = resolved
-    # The gateway base URL is pinned to ``--host``; only print a token minted for
-    # that same workspace, so a profile (or ambient creds) aimed elsewhere can't
-    # present its bearer to this gateway.
-    if args.host and _workspace(resolved_host) != _workspace(args.host):
+    # The gateway base URL is pinned to ``--host``; only release a token minted
+    # for that same https workspace, so a profile (or ambient creds) aimed
+    # elsewhere can't present its bearer here. Fail closed on an empty host, and
+    # reuse the sibling helper's HTTPS-requiring comparator.
+    from omnigent.host.databricks_credential import https_url_on_workspace_host
+
+    if not args.host or not https_url_on_workspace_host(resolved_host, args.host):
         return 0
     if not bearer:
         return 0

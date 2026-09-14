@@ -466,14 +466,51 @@ def test_the_sdk_entrypoint_hints_on_stderr_when_the_sdk_is_missing(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A base install without the ``databricks`` extra can't mint M2M; the
-    entrypoint stays silent on stdout but hints on stderr so it is debuggable."""
+    entrypoint stays silent on stdout but hints on stderr so it is debuggable.
+    The hint is scoped to the SDK import (not authenticate()) so an optional-dep
+    ImportError is not misattributed."""
+    import sys
+
     from omnigent.inner import databricks_token
 
-    def _no_sdk(profile: str | None, host: str | None) -> None:
-        raise ImportError("No module named 'databricks'")
-
-    monkeypatch.setattr(databricks_token, "_sdk_bearer", _no_sdk)
+    # Make ``import databricks.sdk.config`` raise ImportError.
+    monkeypatch.setitem(sys.modules, "databricks.sdk.config", None)
     assert databricks_token.main(["--host", "https://example.databricks.com"]) == 0
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "databricks-sdk" in captured.err
+
+
+def test_the_sdk_entrypoint_withholds_when_no_host_is_given(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The workspace guard fails closed on an empty --host rather than releasing
+    an unchecked token."""
+    from omnigent.inner import databricks_token
+
+    monkeypatch.setattr(
+        databricks_token,
+        "_sdk_bearer",
+        lambda profile, host: ("https://example.databricks.com", "tok"),
+    )
+    assert databricks_token.main(["--profile", "sp"]) == 0  # no --host
+    assert capsys.readouterr().out == ""
+
+
+def test_profile_pinning_scrubs_the_ambient_credential_env_vars() -> None:
+    """Named-profile identity guarantee: the SDK resolves env above the profile
+    section, so the scrub set (built from the real SDK attribute table) must
+    cover the ambient creds that would otherwise outrank a named profile — host,
+    PAT, and M2M client id/secret — while keeping the config-file locator so the
+    profile can still be found. This exercises the real SDK, not a mock."""
+    from omnigent.inner import databricks_token
+
+    names = databricks_token._ambient_credential_env_vars()
+    assert {
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "DATABRICKS_CLIENT_ID",
+        "DATABRICKS_CLIENT_SECRET",
+        "DATABRICKS_CONFIG_PROFILE",
+    } <= names
+    assert "DATABRICKS_CONFIG_FILE" not in names

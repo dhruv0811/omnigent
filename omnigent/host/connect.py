@@ -3006,6 +3006,24 @@ class HostProcess:
                 ),
                 routable_models=[model.id for model in listing.models],
             )
+        from omnigent.acp_cli_harnesses import ACP_CLI_HARNESSES
+
+        acp_row = ACP_CLI_HARNESSES.get(harness)
+        if acp_row is not None:
+            # Builtin ACP CLI rows discover models by running the vendor CLI's own
+            # `models` command on this host, where the CLI + vendor login live. A
+            # row with no command, or a failed probe, yields [] and the picker
+            # falls back to free-text — the session still launches on that login.
+            from omnigent.harnesses.acp_cli_models import discover_acp_cli_models
+
+            acp_models = await asyncio.to_thread(discover_acp_cli_models, harness, acp_row)
+            return HostModelOptionsResultFrame(
+                request_id=frame.request_id,
+                status="ok",
+                models=with_source(acp_models),
+                routable_models=[m["id"] for m in acp_models if isinstance(m.get("id"), str)],
+            )
+
         if harness != "claude-native":
             return HostModelOptionsResultFrame(
                 request_id=frame.request_id,

@@ -236,6 +236,33 @@ def _read_databrickscfg_file_fallback(profile: str | None = None) -> DatabricksC
     return None
 
 
+def _databricks_sdk_token_command(host: str, profile: str | None) -> str:
+    """Auth-command fallback that mints a bearer via the databricks-sdk.
+
+    ``databricks auth token`` (the mint in :func:`databricks_bearer_token_command`)
+    supports U2M only, so an OAuth **M2M** / service-principal profile — an agent
+    authenticating as a workload identity, e.g. on a self-hosted Fargate host —
+    yields no CLI token and the gateway request fails. The
+    :mod:`omnigent.inner.databricks_token` entrypoint resolves the bearer through
+    the databricks-sdk's unified ``Config.authenticate()``, which does the
+    client-credentials exchange (and also covers env / file OIDC and a static
+    PAT), so it reuses the SDK rather than reimplementing any OAuth. Runs only
+    after the CLI mint (and, for the connect profile, the broker) yield nothing.
+
+    :param host: Databricks workspace host, e.g.
+        ``"https://example.databricks.com"``.
+    :param profile: ``~/.databrickscfg`` profile name, or ``None`` to select the
+        workspace by host (env / OIDC service-principal credentials).
+    :returns: Shell command that prints a bearer token on stdout, or nothing.
+    """
+    selector = (
+        f"--profile {shlex.quote(profile)}"
+        if profile
+        else f"--host {shlex.quote(host.rstrip('/'))}"
+    )
+    return f"python3 -m omnigent.inner.databricks_token {selector}"
+
+
 def databricks_bearer_token_command(
     host: str,
     profile: str | None = None,
@@ -301,6 +328,12 @@ def databricks_bearer_token_command(
                 fallback_command = broker_token_command(host)
             except Exception as exc:  # noqa: BLE001 - best-effort; no sidecar ⇒ no fallback.
                 logger.info("databricks bearer: broker fallback lookup failed: %r", exc)
+        # Any profile the broker did not claim (every self-hosted profile) falls
+        # back to the databricks-sdk mint — the only path that resolves an OAuth
+        # M2M / service-principal (or OIDC / PAT) bearer, since the ``databricks
+        # auth token`` mint above supports U2M only.
+        if fallback_command is None:
+            fallback_command = _databricks_sdk_token_command(host, profile)
     selector = (
         f"--profile {json.dumps(profile)}" if profile else f"--host {json.dumps(host.rstrip('/'))}"
     )

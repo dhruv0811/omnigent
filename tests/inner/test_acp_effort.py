@@ -18,11 +18,25 @@ def _ex() -> AcpExecutor:
 
 def _grok_options() -> list[dict]:
     return [
-        {"id": "model", "category": "model", "type": "select", "currentValue": "grok-4.6",
-         "options": [{"value": "grok-4.6"}, {"value": "grok-4.5"}]},
-        {"id": "reasoning_effort", "category": "thought_level", "type": "select",
-         "currentValue": "medium",
-         "options": [{"value": "xhigh"}, {"value": "high"}, {"value": "medium"}, {"value": "low"}]},
+        {
+            "id": "model",
+            "category": "model",
+            "type": "select",
+            "currentValue": "grok-4.6",
+            "options": [{"value": "grok-4.6"}, {"value": "grok-4.5"}],
+        },
+        {
+            "id": "reasoning_effort",
+            "category": "thought_level",
+            "type": "select",
+            "currentValue": "medium",
+            "options": [
+                {"value": "xhigh"},
+                {"value": "high"},
+                {"value": "medium"},
+                {"value": "low"},
+            ],
+        },
     ]
 
 
@@ -45,16 +59,26 @@ async def test_apply_effort_sets_thought_level_via_set_config_option() -> None:
 
     async def fake_rpc(method: str, params: dict, timeout: float | None = None) -> dict:
         calls.append({"method": method, "params": params})
-        return {"result": {"configOptions": [
-            {"id": "reasoning_effort", "category": "thought_level", "currentValue": params["value"]}
-        ]}}
+        return {
+            "result": {
+                "configOptions": [
+                    {
+                        "id": "reasoning_effort",
+                        "category": "thought_level",
+                        "currentValue": params["value"],
+                    }
+                ]
+            }
+        }
 
     ex._rpc = fake_rpc  # type: ignore[assignment]
     await ex._apply_effort_override("s1", "high")
-    assert calls == [{
-        "method": "session/set_config_option",
-        "params": {"sessionId": "s1", "configId": "reasoning_effort", "value": "high"},
-    }]
+    assert calls == [
+        {
+            "method": "session/set_config_option",
+            "params": {"sessionId": "s1", "configId": "reasoning_effort", "value": "high"},
+        }
+    ]
     assert ex._effort_switch_supported is True
 
 
@@ -62,7 +86,9 @@ async def test_apply_effort_sets_thought_level_via_set_config_option() -> None:
 async def test_apply_effort_noop_when_agent_has_no_thought_level_option() -> None:
     # Devin case: only a model option, effort encoded in the model id.
     ex = _ex()
-    ex._note_config_options([{"id": "model", "category": "model", "currentValue": "claude-opus-5-high"}])
+    ex._note_config_options(
+        [{"id": "model", "category": "model", "currentValue": "claude-opus-5-high"}]
+    )
     calls: list[dict] = []
 
     async def fake_rpc(method: str, params: dict, timeout: float | None = None) -> dict:

@@ -1516,8 +1516,8 @@ class AcpExecutor(Executor):
                 continue
             self._config_option_ids.add(opt_id)
             # Record the full option so the pickers can offer the agent's own
-            # advertised choices (a set response replaces this, dropping any that
-            # are no longer offered).
+            # advertised choices; a set response's echoed options refresh these in
+            # place per id (values are updated; ids are not pruned).
             self._config_options[opt_id] = {
                 "id": opt_id,
                 "category": opt.get("category"),
@@ -1653,8 +1653,19 @@ class AcpExecutor(Executor):
             )
             return
         result = response.get("result")
-        if isinstance(result, dict):
-            self._note_config_options(result.get("configOptions"))
+        echoed = result.get("configOptions") if isinstance(result, dict) else None
+        self._note_config_options(echoed)
+        # Trust an echoed currentValue (``_note_config_options`` applied it); if the
+        # agent accepted the switch without echoing the option, record the requested
+        # value locally so the same effort isn't re-sent every turn — mirrors how the
+        # model path falls back to the requested id when no model option is echoed.
+        echoed_ids = (
+            {opt.get("id") for opt in echoed if isinstance(opt, dict)}
+            if isinstance(echoed, list)
+            else set()
+        )
+        if config_id not in echoed_ids and config_id in self._config_options:
+            self._config_options[config_id]["currentValue"] = effort
         logger.info("acp[%s] effort set to %s (transcript kept)", self._config.name, effort)
 
     async def run_turn(

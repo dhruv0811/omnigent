@@ -27,7 +27,8 @@ from omnigent.acp_cli_harnesses import AcpCliHarness
 _logger = logging.getLogger(__name__)
 
 # A models probe is a bounded local command; keep it short so a dropdown open
-# never hangs on a wedged CLI, and cap output so a runaway listing can't OOM.
+# never hangs on a wedged CLI. The char cap bounds the text we parse; the
+# timeout is the real backstop (capture_output still buffers stdout first).
 _TIMEOUT_S = 15.0
 _MAX_OUTPUT_CHARS = 2_000_000
 
@@ -51,12 +52,15 @@ def discover_acp_cli_models(harness_id: str, row: AcpCliHarness) -> list[dict]:
             [row.binary, *row.models_argv],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=_TIMEOUT_S,
             check=True,
         )
-    except (subprocess.SubprocessError, OSError) as exc:
-        # Absent binary / non-zero exit / timeout — the CLI still launches with
-        # its own login, so this is a soft miss, not a dead worker.
+    except Exception as exc:  # noqa: BLE001 — contract: discovery never raises; any failure degrades to []
+        # Absent binary, non-zero exit, timeout, or undecodable output — the CLI
+        # still launches with its own stored login, so this is a soft miss, not a
+        # dead worker. ``errors="replace"`` already prevents the decode case; the
+        # broad catch keeps the documented "never raises" contract for the rest.
         _logger.info("acp-cli[%s] model discovery command failed: %s", harness_id, exc)
         return []
     try:

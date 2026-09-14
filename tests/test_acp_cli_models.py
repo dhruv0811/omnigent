@@ -91,3 +91,16 @@ def test_catalog_rows_declare_known_formats() -> None:
         row = ACP_CLI_HARNESSES[name]
         assert row.models_argv, f"{name} should declare a models command"
         assert row.models_format in _PARSERS, f"{name} format {row.models_format!r} has no parser"
+
+
+def test_discover_never_raises_on_unexpected_error(monkeypatch) -> None:
+    # The module contract is "never raises → []". A CLI emitting undecodable bytes
+    # would raise UnicodeDecodeError (a ValueError) from the decode; the broad catch
+    # (plus errors="replace") must degrade to [] rather than escape to the caller.
+    import omnigent.harnesses.acp_cli_models as mod
+
+    def boom(*_args, **_kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(mod.subprocess, "run", boom)
+    assert discover_acp_cli_models("grok", ACP_CLI_HARNESSES["grok"]) == []

@@ -3009,14 +3009,21 @@ class HostProcess:
         from omnigent.acp_cli_harnesses import ACP_CLI_HARNESSES
 
         acp_row = ACP_CLI_HARNESSES.get(harness)
-        if acp_row is not None:
+        if acp_row is not None or harness == "acp":
             # Builtin ACP CLI rows discover models by running the vendor CLI's own
-            # `models` command on this host, where the CLI + vendor login live. A
-            # row with no command, or a failed probe, yields [] and the picker
-            # falls back to free-text — the session still launches on that login.
+            # `models` command on this host, where the CLI + vendor login live. The
+            # generic `acp` harness (a user-configured `acp:<slug>` agent, which
+            # canonicalizes to `acp`) has no such command, and a row's probe can
+            # fail — both yield [] so the picker degrades to free-text, never a
+            # "failed" error the composer would render. The session still launches
+            # on the CLI's own stored login.
             from omnigent.harnesses.acp_cli_models import discover_acp_cli_models
 
-            acp_models = await asyncio.to_thread(discover_acp_cli_models, harness, acp_row)
+            acp_models = (
+                await asyncio.to_thread(discover_acp_cli_models, harness, acp_row)
+                if acp_row is not None
+                else []
+            )
             return HostModelOptionsResultFrame(
                 request_id=frame.request_id,
                 status="ok",

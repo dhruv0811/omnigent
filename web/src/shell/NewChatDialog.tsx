@@ -3088,12 +3088,23 @@ export function NewChatLandingScreen() {
   );
   // Keep pickedModel valid for the selected ACP harness: clear a value carried
   // from another harness so a create can't pin a model this agent doesn't offer.
+  // Only reconcile once discovery has resolved — an in-flight fetch reports empty
+  // options, which would otherwise wipe a valid pinned model before the list arrives.
   useEffect(() => {
-    if (selectedAcpHarness === null) return;
+    if (selectedAcpHarness === null || hostAcpModelsLoading || hostAcpModelOptions === undefined) {
+      return;
+    }
     if (pickedModel !== "" && !acpModelOptions.some((m) => m.id === pickedModel)) {
       setPickedModel("");
     }
-  }, [selectedAcpHarness, acpModelOptions, pickedModel, setPickedModel]);
+  }, [
+    selectedAcpHarness,
+    hostAcpModelsLoading,
+    hostAcpModelOptions,
+    acpModelOptions,
+    pickedModel,
+    setPickedModel,
+  ]);
   const supportsPermissionMode = nativeAgentHasCapability(selectedAgent, "permissionMode");
   const supportsApprovalMode = nativeAgentHasCapability(selectedAgent, "approvalMode");
   const supportsCursorMode = nativeAgentHasCapability(selectedAgent, "cursorMode");

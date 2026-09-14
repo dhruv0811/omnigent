@@ -133,6 +133,26 @@ async def test_apply_effort_noop_when_already_current() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_effort_records_value_when_setter_echoes_nothing() -> None:
+    # Some agents accept the switch without echoing configOptions; record the
+    # requested value locally so the same effort isn't re-sent every turn.
+    ex = _ex()
+    ex._note_config_options(_grok_options())
+    calls: list[str] = []
+
+    async def fake_rpc(method: str, params: dict, timeout: float | None = None) -> dict:
+        calls.append(params["value"])
+        return {"result": {}}  # accepted, no echoed configOptions
+
+    ex._rpc = fake_rpc  # type: ignore[assignment]
+    await ex._apply_effort_override("s1", "high")
+    assert ex._config_options["reasoning_effort"]["currentValue"] == "high"
+    # A second apply of the now-current value is a no-op (no second RPC).
+    await ex._apply_effort_override("s1", "high")
+    assert calls == ["high"]
+
+
+@pytest.mark.asyncio
 async def test_apply_effort_latches_off_on_rejection() -> None:
     ex = _ex()
     ex._note_config_options(_grok_options())

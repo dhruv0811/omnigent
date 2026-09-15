@@ -2707,7 +2707,8 @@ function ComposerImpl(
   // type extra context after the name; built-in commands keep their
   // existing fill/execute split.
   const slashCommandsWithArgs = useMemo(
-    () => buildSlashCommandWithArgsSet(skills, showEffort, showModel, showBtw, showSide, skillPrefix),
+    () =>
+      buildSlashCommandWithArgsSet(skills, showEffort, showModel, showBtw, showSide, skillPrefix),
     [skills, showEffort, showModel, showBtw, showSide, skillPrefix],
   );
 

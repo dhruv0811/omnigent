@@ -6062,10 +6062,15 @@ async def _dispatch_session_event_to_runner_impl(
         # A codex /side command never reaches the main thread — the executor
         # forks it into a side chat — so the transcript forwarder never mirrors
         # it back and this bubble would sit in the parent chat forever.
-        from omnigent.harnesses.codex_native.side_chat import is_side_chat_command
+        from omnigent.harnesses.codex_native.side_chat import (
+            is_side_chat_command,
+            side_chat_enabled,
+        )
 
-        opens_side_chat = _native_pane_harness(conv) == "codex-native" and is_side_chat_command(
-            _extract_user_text_for_routing(body)
+        opens_side_chat = (
+            side_chat_enabled()
+            and _native_pane_harness(conv) == "codex-native"
+            and is_side_chat_command(_extract_user_text_for_routing(body))
         )
         pending_id: str | None = (
             pending_inputs.record(

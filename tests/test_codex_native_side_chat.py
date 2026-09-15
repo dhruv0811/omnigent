@@ -60,6 +60,21 @@ def test_side_chat_enabled_reads_the_feature_flag(monkeypatch: pytest.MonkeyPatc
     assert side_chat.side_chat_enabled() is False  # other features don't enable it
 
 
+def test_side_chat_enabled_matches_the_server_feature_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The harness parses OMNIGENT_FEATURES itself because the executor runtime has
+    # no server package to import; pin it to the server's canonical resolver so
+    # the two readings can never drift (spacing, dupes, unrelated features).
+    from omnigent.server.feature_flags import Feature, resolve_feature_flags
+
+    for raw in ("", "side_chat", "canvas", "canvas,side_chat", " side_chat , canvas "):
+        monkeypatch.setenv("OMNIGENT_FEATURES", raw)
+        assert side_chat.side_chat_enabled() == resolve_feature_flags().enabled(
+            Feature.SIDE_CHAT
+        ), raw
+
+
 # --------------------------------------------------------------------------- #
 # side_chat_question — /side detection on normalized turn input
 # --------------------------------------------------------------------------- #

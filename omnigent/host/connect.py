@@ -437,11 +437,15 @@ _HOST_CAPABILITY_INIT_TIMEOUT_S = 15.0
 # self-containment). Anything an agent
 # legitimately needs must flow through its spec's env config. Limited to
 # process essentials (PATH/HOME/shell/locale/temp) and TLS trust stores so
-# the runner's outbound HTTPS still works.
+# the runner's outbound HTTPS still works, plus the deployment's release-feature
+# set, which harness code inside the runner gates on.
 _RUNNER_ENV_ALLOWLIST: frozenset[str] = frozenset(
     {
         "PATH",
         "PYTHONPATH",
+        # Release features are resolved from this var; harness code in the
+        # runner reads it, so the snapshot has to survive the hop.
+        "OMNIGENT_FEATURES",
         "HOME",
         "USER",
         "LOGNAME",

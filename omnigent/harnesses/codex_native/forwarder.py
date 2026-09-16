@@ -2104,17 +2104,11 @@ async def supervise_forwarder(
             ),
             name="codex-native-forwarder-subscribe",
         )
-        # Only drain /side requests when the feature is enabled — otherwise the
-        # executor never records one, so the poll would idle for nothing.
-        side_chat_task = (
-            asyncio.create_task(
-                _drive_side_chat_requests(
-                    client, ap_client=ap_client, bridge_dir=bridge_dir, target=target
-                ),
-                name="codex-native-forwarder-side-chat",
-            )
-            if side_chat.side_chat_enabled()
-            else None
+        side_chat_task = asyncio.create_task(
+            _drive_side_chat_requests(
+                client, ap_client=ap_client, bridge_dir=bridge_dir, target=target
+            ),
+            name="codex-native-forwarder-side-chat",
         )
         await _sleep(0)
         try:
@@ -2191,10 +2185,9 @@ async def supervise_forwarder(
             subscribe_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await subscribe_task
-            if side_chat_task is not None:
-                side_chat_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await side_chat_task
+            side_chat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await side_chat_task
             await client.close()
 
 

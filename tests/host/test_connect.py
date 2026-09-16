@@ -2077,26 +2077,6 @@ def test_build_runner_env_allowlists_host_env_and_strips_secrets() -> None:
     assert env[RUNNER_PARENT_PID_ENV_VAR] == "42"
 
 
-def test_build_runner_env_forwards_the_release_feature_set() -> None:
-    """
-    The deployment's release-feature snapshot reaches the runner.
-
-    Harness code inside the runner gates on ``OMNIGENT_FEATURES`` (e.g. the
-    codex ``/side`` side chat), so a feature enabled on the host is inert in the
-    runner unless the var survives this hop.
-    """
-    env = _build_runner_env(
-        {"PATH": "/usr/bin", "OMNIGENT_FEATURES": "side_chat,canvas"},
-        server_url="http://server",
-        runner_id="runner_abc",
-        binding_token="tok",
-        workspace="/ws",
-        parent_pid=42,
-    )
-
-    assert env["OMNIGENT_FEATURES"] == "side_chat,canvas"
-
-
 def test_build_runner_env_forwards_harness_credentials_and_endpoints() -> None:
     """
     Every var in HARNESS_CREDENTIAL_ENV_VARS forwards when present —

@@ -35,7 +35,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -68,28 +67,8 @@ _SIDE_PREFIX = "/side "
 # question is handed over through the bridge dir like the active turn id.
 _SIDE_REQUEST_DIRNAME = "side_chat_requests"
 
-# Release-feature gate, mirroring ``OMNIGENT_FEATURES`` / ``Feature.SIDE_CHAT``
-# in ``omnigent.server.feature_flags`` without importing the server.
-_FEATURES_ENV_VAR = "OMNIGENT_FEATURES"
-_SIDE_CHAT_FEATURE = "side_chat"
-
 _logger = logging.getLogger(__name__)
 _JsonObject = dict[str, Any]
-
-
-def side_chat_enabled() -> bool:
-    """
-    Whether the ``/side`` side-chat release feature is on for this process.
-
-    Gated by ``OMNIGENT_FEATURES=side_chat``, parsed here instead of through
-    :mod:`omnigent.server.feature_flags`: this module is reached from the
-    executor, whose runtime has no server package to import. The server stays
-    the authority for the canonical feature set and its validation, and a parity
-    test keeps the two readings in agreement. Every process inherits
-    ``OMNIGENT_FEATURES``, so they all resolve the same value.
-    """
-    raw = os.environ.get(_FEATURES_ENV_VAR, "")
-    return any(entry.strip() == _SIDE_CHAT_FEATURE for entry in raw.split(","))
 
 
 def side_chat_question_from_text(text: str) -> str | None:

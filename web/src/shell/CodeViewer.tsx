@@ -148,7 +148,8 @@ const MARKDOWN_SANITIZE_SCHEMA = {
 // that HTML; rehype-sanitize then strips anything unsafe (<script>, event
 // handlers, javascript: URLs) so this stays safe to render inline without an
 // iframe. Order matters: alerts transform before sanitize, slug adds IDs to
-// headings, and sanitize runs last, after raw parsing and GFM.
+// headings, and sanitize runs after raw parsing and GFM — only KaTeX comes
+// later, rendering math from the already-sanitized tree.
 const MARKDOWN_REHYPE_PLUGINS: Options["rehypePlugins"] = [
   rehypeRaw,
   rehypeSlug,

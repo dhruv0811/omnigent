@@ -372,6 +372,8 @@ from omnigent.telemetry.events import TurnEndEvent as _TelTurnEndEvent
 from omnigent.telemetry.installation_id import get_installation_id as _get_installation_id
 from omnigent.telemetry.surface import classify_surface as _classify_surface
 from omnigent.util.session_lifecycle import (
+    CLOSED_LABEL_KEY,
+    CLOSED_LABEL_VALUE,
     labels_with_closed_status,
     title_without_closed_marker,
 )
@@ -1042,6 +1044,7 @@ def _build_session_response(
     viewer_id: str | None = None,
     agent_store: AgentStore | None = None,
     agent_cache: AgentCache | None = None,
+    side_chat_sealed: bool = False,
 ) -> SessionResponse:
     """
     Build a :class:`SessionResponse` from store-side entities.
@@ -1137,6 +1140,12 @@ def _build_session_response(
     labels = labels_with_closed_status(_labels_for_viewer(conv.labels, viewer_id), conv.title)
     if agent_name in (_CLAUDE_NATIVE_MODEL, _CODEX_NATIVE_MODEL):
         labels = {**labels, _CLAUDE_NATIVE_UI_LABEL_KEY: _CLAUDE_NATIVE_UI_LABEL_VALUE}
+    # A codex /side child whose ephemeral fork's runner is gone (parent resumed
+    # onto a new runner) can never be sent to again. Surface it as closed so the
+    # composer reads-only itself instead of letting the user fire a turn at a
+    # vanished thread. Computed per-response (not persisted) — self-heals.
+    if side_chat_sealed:
+        labels = {**labels, CLOSED_LABEL_KEY: CLOSED_LABEL_VALUE}
     return SessionResponse(
         id=conv.id,
         agent_id=conv.agent_id,
@@ -10081,6 +10090,37 @@ async def _fetch_model_options(
     return cached or []
 
 
+_SIDE_CHAT_NICKNAME = "Side chat"
+
+
+async def _codex_side_chat_fork_sealed(conv: Conversation, conv_store: ConversationStore) -> bool:
+    """
+    Whether a codex ``/side`` child's ephemeral fork is no longer reachable.
+
+    The fork lives only in the runner process that created it. A side-chat child
+    keeps its birth ``runner_id`` while the parent's changes on resume/relaunch,
+    so a divergence means the fork's owning runner is gone and a follow-up turn
+    would hit a vanished thread. Gated to ``/side`` children (the "Side chat"
+    nickname) so ordinary codex sub-agents are unaffected; a plain reload with
+    the same live runner does not diverge, so a still-live side chat stays
+    sendable.
+    """
+    from omnigent.server.routes._sessions.common import (
+        _CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY,
+    )
+
+    if (
+        not _is_codex_native_subagent(conv)
+        or conv.parent_conversation_id is None
+        or not conv.runner_id
+        or (conv.labels or {}).get(_CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY)
+        != _SIDE_CHAT_NICKNAME
+    ):
+        return False
+    parent = await asyncio.to_thread(conv_store.get_conversation, conv.parent_conversation_id)
+    return parent is not None and bool(parent.runner_id) and parent.runner_id != conv.runner_id
+
+
 async def _get_session_snapshot(
     conv_store: ConversationStore,
     session_id: str,
@@ -10368,6 +10408,7 @@ async def _get_session_snapshot(
         items,
         status,
         permission_level,
+        side_chat_sealed=await _codex_side_chat_fork_sealed(conv, conv_store),
         background_task_count=_session_background_task_count_cache.get(session_id),
         background_tasks=_session_background_tasks_cache.get(session_id),
         llm_model=llm_model,

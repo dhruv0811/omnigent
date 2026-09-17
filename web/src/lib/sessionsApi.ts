@@ -861,28 +861,38 @@ export async function forkSession(
 }
 
 /**
- * Open a generic side chat by forking the conversation onto its own managed
- * sandbox, and return the fork's session id so the caller can open it as a rail
- * tab.
+ * Open a generic side chat by forking the conversation and launching a runner
+ * for the fork on the SOURCE's own host — exactly what the per-message Fork
+ * button does. This is host-agnostic: it drives on a local host or a managed
+ * one, with no managed-sandbox requirement. Codex sessions do NOT use this —
+ * they fork in-process via their native `/side` path (prompt-cache-warm) — so
+ * this is the generic (non-Codex) create.
  *
- * Reuses the fork endpoint with `host_type: "managed"`: "fork the chat and let
- * the user continue it" is exactly a managed fork (its own server-provisioned
- * runner, seeded with the source's history/repo). On a server without managed
- * provisioning the fork endpoint returns an error, which is the intended
- * graceful degradation — the caller surfaces it and no dead tab opens. Codex
- * sessions do NOT use this: they fork in-process via their native `/side` path
- * (prompt-cache-warm), so this is the generic (non-Codex) create.
+ * When the source is on a git branch the fork launches in its OWN worktree
+ * (`side-chat/<id>`, based on the source branch) so the side chat stays off the
+ * parent's working tree; otherwise it launches in the source's workspace.
  *
  * @param sourceId - The parent conversation to fork, e.g. "conv_abc123".
  * @returns The new side-chat session id.
- * @throws Error carrying the server's failure detail (e.g. no managed sandbox
- *   configured) so the caller can surface it inline.
+ * @throws Error when the source has no host/workspace to launch on, or when the
+ *   fork / runner launch fails, so the caller can surface it (a toast).
  */
 export async function createSideChat(sourceId: string): Promise<{ childSessionId: string }> {
-  // `sandbox: {}` → managed fork inheriting the source's repo; the server picks
-  // the default provider. This is the "cheap drive" path.
-  const session = await forkSession(sourceId, { title: "Side chat", sandbox: {} });
-  return { childSessionId: session.id };
+  const source = await getSession(sourceId);
+  const { hostId, workspace, gitBranch } = source;
+  if (!hostId || !workspace) {
+    // No host/workspace to run on — fail before creating an orphan fork so the
+    // caller shows an error instead of opening a dead tab.
+    throw new Error("This session has no host to run a side chat on.");
+  }
+  const fork = await forkSession(sourceId, { title: "Side chat" });
+  await launchRunner(
+    hostId,
+    fork.id,
+    workspace,
+    gitBranch ? { branchName: `side-chat/${fork.id.slice(-8)}`, baseBranch: gitBranch } : undefined,
+  );
+  return { childSessionId: fork.id };
 }
 
 /**

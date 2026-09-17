@@ -3285,16 +3285,24 @@ function mirrorActiveEntry(): void {
  * but the root projection (what `useChatStore` reads) keeps pointing at the main
  * chat; a side-chat surface reads the child entry via `useConversationEntryState`.
  *
- * No-op when the entry is already live (its stream is bound or binding), and for
- * a blank or client-only (temp) id.
+ * No-op when the entry is already live and healthy (stream bound or still
+ * loading), and for a blank or client-only (temp) id. When a prior attempt left
+ * the entry with a load error, it is released and re-bound so a failed side chat
+ * can recover on retry (a plain membership check would strand it forever).
  *
  * @param id Conversation id to stream, e.g. a side-chat child.
  */
 export async function ensureConversationStreamed(id: string): Promise<void> {
   if (id === "" || isTempConvId(id)) return;
-  if (conversationRegistry.peek(id) !== undefined) return;
+  const existing = conversationRegistry.peek(id);
+  if (existing !== undefined) {
+    // Healthy or still loading (no error yet): its stream is live — reuse it.
+    if (existing.getState().conversationLoadError === null) return;
+    // A prior load failed: drop the dead entry so the acquire below rebinds.
+    conversationRegistry.release(id);
+  }
   const entry = conversationRegistry.acquire(id);
-  entry.setState({ loadingConversation: true });
+  entry.setState({ loadingConversation: true, conversationLoadError: null });
   await bindStream(id, entrySetter(entry), entryGetter(entry), true);
 }
 

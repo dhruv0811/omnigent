@@ -81,6 +81,7 @@ import {
   isSessionSharedWithOthers,
 } from "@/lib/permissionsApi";
 import { getCurrentAuthorId } from "@/lib/identity";
+import { toast } from "sonner";
 import { createSideChat, retrySession } from "@/lib/sessionsApi";
 import { codexEffortLevelsForModel, findNativeModelOption } from "@/lib/codexNativeModels";
 import { modelConfigurationSourceRows } from "@/lib/modelConfigurationSource";
@@ -3212,13 +3213,18 @@ function ComposerImpl(
     const openGenericSideChat = (question: string) => {
       const sourceId = useChatStore.getState().conversationId;
       if (sourceId === null) return;
-      dirtyRef.current = true;
-      setValue("");
       setCommandError(null);
       createSideChat(sourceId).then(
-        ({ childSessionId }) =>
-          useChatStore.getState().openSideChatWithDraft(childSessionId, question),
-        () => setCommandError("Couldn't start a side chat for this session."),
+        ({ childSessionId }) => {
+          // Clear the composer only once the side chat exists, so a failed
+          // create keeps the user's typed question instead of dropping it.
+          dirtyRef.current = true;
+          setValue("");
+          useChatStore.getState().openSideChatWithDraft(childSessionId, question);
+        },
+        // Surface the failure as a toast, not an inline composer error; the
+        // composer text is left intact for a retry.
+        () => toast.error("Couldn't start a side chat for this session."),
       );
     };
 
@@ -3889,7 +3895,7 @@ function ComposerImpl(
                         createSideChat(sourceId).then(
                           ({ childSessionId }) =>
                             useChatStore.setState({ sideChatToOpen: childSessionId }),
-                          () => setCommandError("Couldn't start a side chat for this session."),
+                          () => toast.error("Couldn't start a side chat for this session."),
                         );
                       }
                     : undefined

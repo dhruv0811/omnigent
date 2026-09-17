@@ -66,6 +66,13 @@ const TerminalView = lazy(() =>
   import("@/components/blocks/TerminalView").then((m) => ({ default: m.TerminalView })),
 );
 
+// Side-chat child ids opened in THIS app session. Module scope, so it resets on
+// reload/restart. A Codex side chat is an ephemeral thread-fork of the parent's
+// runner: one restored from localStorage after a restart points at a dead
+// process, so it must be read-only. This set distinguishes a live, this-session
+// child from a restored (dead) one.
+const sideChatsStartedThisSession = new Set<string>();
+
 function WorkspaceTabTooltip({
   label,
   className,
@@ -776,6 +783,8 @@ function WorkspacePanelImpl({
     // screen now.
     if (sideChatToOpen.parentId !== conversationId) return;
     const { childId } = sideChatToOpen;
+    // Started this session → live (not a dead restored Codex fork).
+    sideChatsStartedThisSession.add(childId);
     const awaiting = awaitingPendingIdsRef.current.shift();
     if (awaiting !== undefined) {
       sideChats.rekey(awaiting, childId);
@@ -1258,6 +1267,14 @@ function WorkspacePanelImpl({
             key={sideChats.selected}
             childId={sideChats.selected}
             onStart={(text) => startPendingSideChat(sideChats.selected!, text)}
+            // A Codex side chat restored after a restart is a dead ephemeral
+            // fork — show it read-only (and kill it) rather than let the user
+            // send into a thread that no longer exists.
+            readOnly={
+              usesNativeSideChatFork(sideChatHarness) &&
+              !sideChats.selected.startsWith("pending:") &&
+              !sideChatsStartedThisSession.has(sideChats.selected)
+            }
           />
         ) : rightRailTab === "browser" && showBrowserTab ? (
           // Embedded browser (Electron only) — BrowserPane self-gates and

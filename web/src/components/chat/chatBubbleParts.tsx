@@ -64,6 +64,7 @@ import { getCurrentAuthorId } from "@/lib/identity";
 import { retryRateLimitedTurn, retrySession } from "@/lib/sessionsApi";
 import { useChatStore, type PendingUserMessage } from "@/store/chatStore";
 import { conversationRegistry } from "@/store/conversationRegistry";
+import { useConversationEntryState } from "@/hooks/useConversationEntryState";
 import {
   ConversationScopeContext,
   useScopedConversationId,
@@ -836,17 +837,25 @@ function AssistantBubble({
   // The walker only emits an assistant bubble when at least one assistant-side
   // block exists. The "Working…" shimmer for the empty-items / streaming gap
   // is rendered at the page level, not inside this component.
-  const sessionStatus = useChatStore((s) => s.sessionStatus);
-  // Scoped so retry targets the conversation this bubble belongs to (the child
-  // in a side-chat pane), not whatever the root store currently projects.
+  //
+  // Scoped so a side-chat bubble reads the CHILD's status and targets the child
+  // for retry — not whatever the root store currently projects. Unscoped (the
+  // main transcript) reads the root store exactly as before; `useConversationEntryState(null)`
+  // is inert (no subscription, stable empty snapshot).
   const scopedConversationId = useContext(ConversationScopeContext);
+  const scopedState = useConversationEntryState(scopedConversationId);
   const activeConversationId = useChatStore((s) => s.conversationId);
   const conversationId = scopedConversationId ?? activeConversationId;
-  // A pending elicitation means the turn is parked awaiting the user — still in
-  // flight even when its lifecycle or the session status reads settled.
-  const hasPendingElicitation = useChatStore((s) =>
+  const rootSessionStatus = useChatStore((s) => s.sessionStatus);
+  const rootHasPendingElicitation = useChatStore((s) =>
     s.blocks.some((b) => b.type === "elicitation" && b.status === "pending"),
   );
+  const sessionStatus = scopedConversationId ? scopedState.sessionStatus : rootSessionStatus;
+  // A pending elicitation means the turn is parked awaiting the user — still in
+  // flight even when its lifecycle or the session status reads settled.
+  const hasPendingElicitation = scopedConversationId
+    ? scopedState.blocks.some((b) => b.type === "elicitation" && b.status === "pending")
+    : rootHasPendingElicitation;
   // Getter computes the markdown lazily at click time.
   const { isCopied, handleCopy } = useCopyMessage(() => collectBubbleMarkdown(bubble.items));
   // null outside AppShell's provider (isolated tests) → hide the action.

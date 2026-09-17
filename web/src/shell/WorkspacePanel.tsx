@@ -759,10 +759,12 @@ function WorkspacePanelImpl({
   useEffect(() => {
     activeSideChatRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [sideChats.selected, rightRailTab]);
-  // The pending tab awaiting its real child id (set on first send). When the
-  // child arrives we REKEY that pending tab in place rather than open a new one,
-  // so the tab never disappears and reappears.
-  const awaitingPendingIdRef = useRef<string | null>(null);
+  // Pending tabs awaiting a real child id, in submit order. Only Codex uses this
+  // queue — its child arrives asynchronously via session_created with no id to
+  // pair on, so a signal rekeys the OLDEST awaiting tab (FIFO). A single ref
+  // would cross-assign when two launches overlap; the generic path skips the
+  // queue entirely and rekeys its own tab directly (see startPendingSideChat).
+  const awaitingPendingIdsRef = useRef<string[]>([]);
   // A side chat the server just created (Codex's native fork, or the generic
   // fork) announces itself via `sideChatToOpen`. If a pending tab is awaiting,
   // rekey it in place; otherwise open a fresh tab. AppShell reveals the rail.
@@ -774,11 +776,11 @@ function WorkspacePanelImpl({
     // screen now.
     if (sideChatToOpen.parentId !== conversationId) return;
     const { childId } = sideChatToOpen;
-    const awaiting = awaitingPendingIdRef.current;
-    if (awaiting !== null) {
+    const awaiting = awaitingPendingIdsRef.current.shift();
+    if (awaiting !== undefined) {
       sideChats.rekey(awaiting, childId);
-      awaitingPendingIdRef.current = null;
     } else {
+      // Generic already rekeyed its own tab; this just re-selects it (idempotent).
       sideChats.open(childId);
     }
     onRightRailTabChange("sidechat");
@@ -807,14 +809,12 @@ function WorkspacePanelImpl({
   // runner on the parent's host. Rejects so the composer re-enables and keeps
   // the typed text for a retry.
   const startPendingSideChat = (pendingId: string, text: string): Promise<void> => {
-    awaitingPendingIdRef.current = pendingId;
     if (usesNativeSideChatFork(sideChatHarness)) {
-      if (parentAgentId === null) {
-        awaitingPendingIdRef.current = null;
-        return Promise.reject(new Error("no agent"));
-      }
-      // The question goes to the PARENT as `/side`; the native fork seeds the
-      // child's first turn, which surfaces via session_created → sideChatToOpen.
+      if (parentAgentId === null) return Promise.reject(new Error("no agent"));
+      // The child arrives asynchronously via session_created with no id to pair
+      // on, so queue this tab to be rekeyed FIFO. The question goes to the
+      // PARENT as `/side`; the native fork seeds the child's first turn.
+      awaitingPendingIdsRef.current.push(pendingId);
       void useChatStore.getState().send(SIDE_CHAT_COMMAND_PREFIX + text, parentAgentId, undefined, {
         pinnedConversationId: conversationId,
       });
@@ -822,12 +822,16 @@ function WorkspacePanelImpl({
     }
     return createSideChat(conversationId).then(
       ({ childSessionId }) => {
-        // Seed the question so the rekeyed child auto-sends it once its agent
-        // binds; openSideChatWithDraft fires sideChatToOpen → the effect rekeys.
+        // We have the child id here, so rekey THIS pending tab directly — no
+        // shared queue, so overlapping launches can't cross-assign. Seeding the
+        // draft fires sideChatToOpen, which then just re-selects + reveals.
+        sideChats.rekey(pendingId, childSessionId);
         useChatStore.getState().openSideChatWithDraft(childSessionId, text, conversationId);
       },
       (err) => {
-        awaitingPendingIdRef.current = null;
+        // The rail path had no failure feedback (unlike the composer entry
+        // points); surface it. The pending tab + typed text stay for a retry.
+        toast.error("Couldn't start a side chat for this session.");
         throw err;
       },
     );

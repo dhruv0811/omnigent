@@ -3312,9 +3312,13 @@ export async function ensureConversationStreamed(id: string): Promise<void> {
   if (id === "" || isTempConvId(id)) return;
   const existing = conversationRegistry.peek(id);
   if (existing !== undefined) {
-    // Healthy or still loading (no error yet): its stream is live — reuse it.
-    if (existing.getState().conversationLoadError === null) return;
-    // A prior load failed: drop the dead entry so the acquire below rebinds.
+    // Reuse only while a load is in flight (guards a double-bind) or the stream
+    // is actually live. A non-reconnectable `server_closed` tears down the
+    // controller WITHOUT setting a load error, so an error-free entry can still
+    // be dead — reusing it would strand a remounted pane on stale state. This
+    // mirrors switchTo's `isConversationStreamCurrent` liveness gate.
+    if (existing.getState().loadingConversation || isConversationStreamCurrent(id)) return;
+    // Dead or failed: drop the entry so the acquire below rebinds.
     conversationRegistry.release(id);
   }
   const entry = conversationRegistry.acquire(id);

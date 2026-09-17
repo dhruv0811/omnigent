@@ -19,10 +19,10 @@ function readSideChatTabsState(conversationId: string): SideChatTabsState {
 
 /**
  * Per-session side-chat tabs for the Workspace rail — a browser-local list of
- * child conversation ids, mirroring {@link useBrowserTabs}. Browser-local by
- * design: side chats are ephemeral and disappear when the app is closed, so the
- * tab references live only in `sessionWorkspaceState` (localStorage), never on
- * the server.
+ * child conversation ids, mirroring {@link useBrowserTabs}. The references live
+ * in `sessionWorkspaceState` (localStorage), never on the server, so they are
+ * per-device and per-browser: they persist across app restarts and reloads but
+ * do not follow the user to another device.
  *
  * Opening (`open`) just records an already-created child id as a tab — the
  * child itself is created by the server (Codex's native ephemeral fork, or the

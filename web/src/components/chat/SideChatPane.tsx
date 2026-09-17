@@ -118,23 +118,33 @@ export function SideChatPane({
   // filtering there would wrongly hide the side chat's first question.
   const filterHistory = !usesNativeSideChatFork(sessionHarness);
   // Load the persisted boundary when the child changes (mount / rekey); the
-  // in-mount ref just avoids re-reading storage every render.
-  const boundaryRef = useRef<{ childId: string; ids: Set<string> | null } | null>(null);
+  // in-mount ref avoids re-reading storage every render and tracks whether we've
+  // actually observed a load run, so we don't capture a boundary on the initial
+  // pre-load render.
+  const boundaryRef = useRef<{
+    childId: string;
+    ids: Set<string> | null;
+    loadSeen: boolean;
+  } | null>(null);
   if (boundaryRef.current === null || boundaryRef.current.childId !== childId) {
     boundaryRef.current = {
       childId,
       ids: filterHistory && !pending ? readInheritedBoundary(childId) : null,
+      loadSeen: false,
     };
   }
-  // Capture once, before the side chat's first turn arrives: on a fresh generic
-  // fork the child's blocks are its inherited (copied) history, so snapshot them
-  // and persist so subsequent mounts/reloads hide the same set, not new turns.
+  if (loadingConversation) boundaryRef.current.loadSeen = true;
+  // Capture once, when the fork's load has actually completed — even if it is
+  // EMPTY (a parent with no history), so the side chat's first message isn't
+  // mistaken for inherited history and hidden. Snapshot the inherited item ids
+  // and persist so later mounts/reloads hide the same set, not new turns.
   if (
     boundaryRef.current.ids === null &&
     !pending &&
     filterHistory &&
+    boundaryRef.current.loadSeen &&
     !loadingConversation &&
-    blocks.length > 0
+    conversationLoadError === null
   ) {
     const ids = new Set(
       blocks

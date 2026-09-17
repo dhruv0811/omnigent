@@ -33,7 +33,10 @@ function isPendingSideChat(id: string): boolean {
   return id.startsWith("pending:");
 }
 
-const EMPTY_STATE_BODY = "Side chats are temporary and disappear when you close the app.";
+// Accurate for every harness: a side chat is a fork that stays out of the main
+// thread. It is NOT reliably ephemeral — a non-Codex side chat is a persisted
+// fork (hidden from the sidebar), so the copy doesn't promise it disappears.
+const EMPTY_STATE_BODY = "Ask a question here without affecting the main conversation.";
 
 /**
  * A scoped chat surface for a side-chat, rendered as a Workspace-rail tab beside
@@ -166,7 +169,7 @@ export function SideChatPane({
             </Button>
           </div>
         ) : isEmpty ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+          <div className="side-chat-empty-backdrop flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
             <MessagesSquareIcon className="size-6 text-muted-foreground" />
             <p className="text-ui font-medium text-foreground">Side chat</p>
             <p className="max-w-[36ch] text-sm text-muted-foreground">{EMPTY_STATE_BODY}</p>

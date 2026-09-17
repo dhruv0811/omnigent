@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { useChatStore, ensureConversationStreamed } from "@/store/chatStore";
 import { useConversationEntryState } from "@/hooks/useConversationEntryState";
 import { useDictationInsert } from "@/hooks/useDictationInsert";
+import { usesNativeSideChatFork } from "@/lib/sideChat";
 
 /** A `pending:` tab has no child session yet; its first send creates the fork. */
 function isPendingSideChat(id: string): boolean {
@@ -79,6 +80,7 @@ export function SideChatPane({
     pendingUserMessages,
     subagentRoutingOverride,
     sessionStatus,
+    sessionHarness,
     boundAgentId,
     loadingConversation,
     conversationLoadError,
@@ -86,9 +88,18 @@ export function SideChatPane({
 
   // Hide the forked-in history: snapshot the item ids present once hydration
   // settles, then render only what arrives after (the side chat's own turns).
-  // A native Codex fork has ~no inherited items, so this is a no-op there.
+  // GENERIC forks only — they copy the parent transcript. A native Codex child
+  // already holds only its own turns (context lives in the native thread), so
+  // filtering there would wrongly hide the side chat's first question.
+  const filterHistory = !usesNativeSideChatFork(sessionHarness);
   const inheritedRef = useRef<Set<string> | null>(null);
-  if (inheritedRef.current === null && !pending && !loadingConversation && blocks.length > 0) {
+  if (
+    inheritedRef.current === null &&
+    !pending &&
+    filterHistory &&
+    !loadingConversation &&
+    blocks.length > 0
+  ) {
     inheritedRef.current = new Set(
       blocks
         .map((b) => (b as { ctx?: { itemId?: string | null } }).ctx?.itemId)
@@ -149,7 +160,7 @@ export function SideChatPane({
   const isEmpty = bubbles.length === 0 && !loadingConversation && !loadFailed;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="side-chat-backdrop flex h-full min-h-0 flex-col">
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4">
         {loadFailed ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
@@ -169,7 +180,7 @@ export function SideChatPane({
             </Button>
           </div>
         ) : isEmpty ? (
-          <div className="side-chat-empty-backdrop flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
             <MessagesSquareIcon className="size-6 text-muted-foreground" />
             <p className="text-ui font-medium text-foreground">Side chat</p>
             <p className="max-w-[36ch] text-sm text-muted-foreground">{EMPTY_STATE_BODY}</p>

@@ -46,7 +46,7 @@ import { useSideChats } from "@/hooks/useSideChats";
 import { SideChatPane } from "@/components/chat/SideChatPane";
 import { useChatStore } from "@/store/chatStore";
 import { SIDE_CHAT_COMMAND_PREFIX, supportsSideChat, usesNativeSideChatFork } from "@/lib/sideChat";
-import { createSideChat } from "@/lib/sessionsApi";
+import { createSideChat, stopSession } from "@/lib/sessionsApi";
 import { useSessionAgent } from "@/hooks/useAgents";
 import type { SessionLiveness } from "@/hooks/useSessionLiveness";
 import { terminalTabKey, useCreateTerminal, useTerminals } from "@/hooks/useTerminals";
@@ -759,12 +759,22 @@ function WorkspacePanelImpl({
   useEffect(() => {
     activeSideChatRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [sideChats.selected, rightRailTab]);
+  // The pending tab awaiting its real child id (set on first send). When the
+  // child arrives we REKEY that pending tab in place rather than open a new one,
+  // so the tab never disappears and reappears.
+  const awaitingPendingIdRef = useRef<string | null>(null);
   // A side chat the server just created (Codex's native fork, or the generic
-  // `POST /side-chat`) announces itself via `sideChatToOpen`; open it as a tab
-  // and clear the one-shot signal. AppShell reveals the rail in parallel.
+  // fork) announces itself via `sideChatToOpen`. If a pending tab is awaiting,
+  // rekey it in place; otherwise open a fresh tab. AppShell reveals the rail.
   useEffect(() => {
     if (sideChatToOpen === null) return;
-    sideChats.open(sideChatToOpen);
+    const awaiting = awaitingPendingIdRef.current;
+    if (awaiting !== null) {
+      sideChats.rekey(awaiting, sideChatToOpen);
+      awaitingPendingIdRef.current = null;
+    } else {
+      sideChats.open(sideChatToOpen);
+    }
     onRightRailTabChange("sidechat");
     clearSideChatToOpen();
   }, [sideChatToOpen, sideChats, onRightRailTabChange, clearSideChatToOpen]);
@@ -783,27 +793,44 @@ function WorkspacePanelImpl({
         onRightRailTabChange("sidechat");
       }
     : undefined;
-  // First message sent in a pending side-chat tab: create the fork now, then
-  // drop the pending tab (the real child's tab takes over). Codex forks
-  // in-process (its runner intercepts the `/side` message on the parent, kept
-  // prompt-cache-warm); every other harness forks server-side + launches a
-  // runner on the parent's host. Rejects so the composer can re-enable and keep
+  // First message sent in a pending side-chat tab: create the fork now. The
+  // pending tab stays put and is rekeyed to the real child once it arrives (via
+  // the sideChatToOpen effect above), so there's no disappear/reappear. Codex
+  // forks in-process (its runner intercepts the `/side` message on the parent,
+  // kept prompt-cache-warm); every other harness forks server-side + launches a
+  // runner on the parent's host. Rejects so the composer re-enables and keeps
   // the typed text for a retry.
   const startPendingSideChat = (pendingId: string, text: string): Promise<void> => {
+    awaitingPendingIdRef.current = pendingId;
     if (usesNativeSideChatFork(sideChatHarness)) {
-      if (parentAgentId === null) return Promise.reject(new Error("no agent"));
+      if (parentAgentId === null) {
+        awaitingPendingIdRef.current = null;
+        return Promise.reject(new Error("no agent"));
+      }
+      // The question goes to the PARENT as `/side`; the native fork seeds the
+      // child's first turn, which surfaces via session_created → sideChatToOpen.
       void useChatStore.getState().send(SIDE_CHAT_COMMAND_PREFIX + text, parentAgentId, undefined, {
         pinnedConversationId: conversationId,
       });
-      sideChats.close(pendingId);
       return Promise.resolve();
     }
-    return createSideChat(conversationId).then(({ childSessionId }) => {
-      // Seed the question so the real child auto-sends it once its agent binds,
-      // and open its tab via the shared sideChatToOpen path.
-      useChatStore.getState().openSideChatWithDraft(childSessionId, text);
-      sideChats.close(pendingId);
-    });
+    return createSideChat(conversationId).then(
+      ({ childSessionId }) => {
+        // Seed the question so the rekeyed child auto-sends it once its agent
+        // binds; openSideChatWithDraft fires sideChatToOpen → the effect rekeys.
+        useChatStore.getState().openSideChatWithDraft(childSessionId, text);
+      },
+      (err) => {
+        awaitingPendingIdRef.current = null;
+        throw err;
+      },
+    );
+  };
+  // Close a side-chat tab: stop the child's runner (real children only) so its
+  // compute is freed, then drop the browser-local tab.
+  const closeSideChat = (childId: string) => {
+    if (!childId.startsWith("pending:")) void stopSession(childId).catch(() => {});
+    sideChats.close(childId);
   };
 
   // Memoized so FileViewer's Escape-to-close effect doesn't re-subscribe its
@@ -1103,7 +1130,7 @@ function WorkspacePanelImpl({
                       onAuxClick={(event) => {
                         if (event.button === 1) {
                           event.preventDefault();
-                          sideChats.close(childId);
+                          closeSideChat(childId);
                         }
                       }}
                       onClick={() => {
@@ -1118,7 +1145,7 @@ function WorkspacePanelImpl({
                       type="button"
                       aria-label={`Close ${label}`}
                       className="flex size-4 items-center justify-center rounded hover:bg-muted"
-                      onClick={() => sideChats.close(childId)}
+                      onClick={() => closeSideChat(childId)}
                     >
                       <XIcon className="size-3" />
                     </button>

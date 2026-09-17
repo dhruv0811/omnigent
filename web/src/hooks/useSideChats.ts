@@ -73,6 +73,26 @@ export function useSideChats(conversationId: string) {
     [update],
   );
 
+  /** Replace a tab's id in place, preserving its position and selection. Used
+   *  when a `pending:` tab's fork resolves to a real child id, so the tab does
+   *  not disappear and reappear. No-op if `oldId` isn't open; if `newId` is
+   *  already a tab, the pending one is just dropped. */
+  const rekey = useCallback(
+    (oldId: string, newId: string) =>
+      update((current) => {
+        const index = current.tabs.indexOf(oldId);
+        if (index === -1) return current;
+        const selected = current.selected === oldId ? newId : current.selected;
+        if (current.tabs.includes(newId)) {
+          return { tabs: current.tabs.filter((id) => id !== oldId), selected };
+        }
+        const tabs = [...current.tabs];
+        tabs[index] = newId;
+        return { tabs, selected };
+      }),
+    [update],
+  );
+
   /** Close a tab. Drops only the client-side reference — an ephemeral Codex
    *  fork dies with its process, and a generic child stays hidden server-side. */
   const close = useCallback(
@@ -88,5 +108,5 @@ export function useSideChats(conversationId: string) {
     [update],
   );
 
-  return { tabs: state.tabs, selected: state.selected, open, openPending, close, select };
+  return { tabs: state.tabs, selected: state.selected, open, openPending, rekey, close, select };
 }

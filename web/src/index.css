@@ -475,20 +475,16 @@
     var(--background);
 }
 
-/* Soft brand-pink wash behind the side-chat empty state (corner glows,
-   top-right + bottom-left), matching the design's side-chat backdrop. */
-.side-chat-empty-backdrop {
-  background:
-    radial-gradient(
-      130% 90% at 100% 0%,
-      color-mix(in oklch, var(--brand-accent) 12%, transparent),
-      transparent 55%
-    ),
-    radial-gradient(
-      130% 90% at 0% 100%,
-      color-mix(in oklch, var(--brand-accent) 9%, transparent),
-      transparent 55%
-    );
+/* Soft brand-accent wash behind the whole side-chat pane: a single diffuse
+   glow from the top-right that fades to nothing, matching the design. One
+   gradient (no seam) over the full pane height (no hard edge above the
+   composer), kept very subtle so it reads fine behind message bubbles too. */
+.side-chat-backdrop {
+  background: radial-gradient(
+    150% 110% at 100% 0%,
+    color-mix(in oklch, var(--brand-accent) 8%, transparent),
+    transparent 70%
+  );
 }
 
 /* Fixed default icon geometry: a 14px glyph centered in a 16px SVG box. */

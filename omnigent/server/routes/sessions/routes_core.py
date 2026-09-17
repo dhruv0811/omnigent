@@ -3030,8 +3030,12 @@ def register_core_routes(
         if permission_store is not None and user_id is not None:
             await asyncio.to_thread(permission_store.ensure_user, user_id)
             await asyncio.to_thread(permission_store.grant, user_id, new_conv.id, LEVEL_OWNER)
-        # Push the forked session to this user's other open tabs.
-        _announce_session_added(user_id, new_conv.id)
+        # Push the forked session to this user's other open tabs — but NOT a
+        # side chat: it surfaces only as a Workspace-rail tab, never a sidebar
+        # row, so announcing it would leak it into every open sidebar (the
+        # real-time path bypasses the list-endpoint's side-chat filter).
+        if not body.side_chat:
+            _announce_session_added(user_id, new_conv.id)
 
         from omnigent.server.managed_hosts import read_managed_repo_workspaces
 

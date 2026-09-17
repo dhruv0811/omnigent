@@ -9,6 +9,47 @@ afterEach(() => {
 });
 
 describe("side-chat soft tabs", () => {
+  it("opens an empty pending tab, then rekeys it in place to the real child", () => {
+    const { result } = renderHook(() => useSideChats("session-a"));
+    let pendingId = "";
+    act(() => {
+      pendingId = result.current.openPending();
+    });
+    expect(pendingId.startsWith("pending:")).toBe(true);
+    expect(result.current.tabs).toEqual([pendingId]);
+    expect(result.current.selected).toBe(pendingId);
+    // Rekey preserves position + selection (no disappear/reappear).
+    act(() => result.current.rekey(pendingId, "conv_real"));
+    expect(result.current.tabs).toEqual(["conv_real"]);
+    expect(result.current.selected).toBe("conv_real");
+  });
+
+  it("rekey keeps a pending tab's slot among siblings", () => {
+    const { result } = renderHook(() => useSideChats("session-a"));
+    let pendingId = "";
+    act(() => result.current.open("conv_first"));
+    act(() => {
+      pendingId = result.current.openPending();
+    });
+    act(() => result.current.open("conv_third"));
+    // pending is the middle tab; rekey it and it stays middle.
+    act(() => result.current.rekey(pendingId, "conv_second"));
+    expect(result.current.tabs).toEqual(["conv_first", "conv_second", "conv_third"]);
+  });
+
+  it("rekey to an already-open id drops the pending tab", () => {
+    const { result } = renderHook(() => useSideChats("session-a"));
+    let pendingId = "";
+    act(() => result.current.open("conv_real"));
+    act(() => {
+      pendingId = result.current.openPending();
+    });
+    expect(result.current.tabs).toEqual(["conv_real", pendingId]);
+    act(() => result.current.rekey(pendingId, "conv_real"));
+    expect(result.current.tabs).toEqual(["conv_real"]);
+    expect(result.current.selected).toBe("conv_real");
+  });
+
   it("opens child ids as tabs, selecting each, and is idempotent", () => {
     const { result } = renderHook(() => useSideChats("session-a"));
     expect(result.current.tabs).toEqual([]);

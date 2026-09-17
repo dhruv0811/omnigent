@@ -3873,6 +3873,28 @@ function ComposerImpl(
                 planDisabled={isReadOnly || planModeBusy}
                 planActive={codexPlanMode}
                 planLabel={codexPlanMode ? "Exit Plan mode" : "Enter Plan mode"}
+                onSideChat={
+                  composerSessionId && !isReadOnly && supportsSideChat(sessionHarness)
+                    ? () => {
+                        if (usesNativeSideChatFork(sessionHarness)) {
+                          // Codex forks in-process from a typed /side; prefill so
+                          // the user types the question.
+                          setValue(SIDE_CHAT_COMMAND_PREFIX);
+                          setCommandError(null);
+                          dirtyRef.current = true;
+                          return;
+                        }
+                        const sourceId = useChatStore.getState().conversationId;
+                        if (sourceId === null) return;
+                        createSideChat(sourceId).then(
+                          ({ childSessionId }) =>
+                            useChatStore.setState({ sideChatToOpen: childSessionId }),
+                          () =>
+                            setCommandError("Couldn't start a side chat for this session."),
+                        );
+                      }
+                    : undefined
+                }
               />
               {!subAgentLabel && composerSessionId && (
                 <HostBadge

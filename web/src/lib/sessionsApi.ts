@@ -802,9 +802,11 @@ export async function forkSession(
       codexBypassSandbox?: boolean;
     };
     sandbox?: { provider?: string | null; workspace?: string | null };
+    /** Mark the fork as a side chat (hidden from the left sidebar). */
+    sideChat?: boolean;
   } = {},
 ): Promise<Session> {
-  const { title, agentId, upToResponseId, config, sandbox } = options;
+  const { title, agentId, upToResponseId, config, sandbox, sideChat } = options;
   const body: {
     title?: string;
     agent_id?: string;
@@ -816,7 +818,11 @@ export async function forkSession(
     host_type?: "managed";
     sandbox_provider?: string;
     workspace?: string | null;
+    side_chat?: boolean;
   } = {};
+  if (sideChat) {
+    body.side_chat = true;
+  }
   if (title !== undefined) {
     body.title = title;
   }
@@ -885,7 +891,7 @@ export async function createSideChat(sourceId: string): Promise<{ childSessionId
     // caller shows an error instead of opening a dead tab.
     throw new Error("This session has no host to run a side chat on.");
   }
-  const fork = await forkSession(sourceId, { title: "Side chat" });
+  const fork = await forkSession(sourceId, { title: "Side chat", sideChat: true });
   await launchRunner(
     hostId,
     fork.id,

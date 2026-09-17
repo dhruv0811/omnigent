@@ -51,6 +51,16 @@ export function useSideChats(conversationId: string) {
     [update],
   );
 
+  /** Open an empty (not-yet-created) side-chat tab and select it, returning its
+   *  local `pending:` id. The fork is created only when the user sends the
+   *  first message (see WorkspacePanel's startPendingSideChat), then this tab is
+   *  closed and the real child's tab takes over. */
+  const openPending = useCallback((): string => {
+    const id = `pending:${crypto.randomUUID()}`;
+    update((current) => ({ tabs: [...current.tabs, id], selected: id }));
+    return id;
+  }, [update]);
+
   /** Add a child id as a tab and select it. Idempotent: an already-open child
    *  is re-selected, not duplicated (a create both returns the id and fires a
    *  `session_created`, so `open` can be reached twice for one child). */
@@ -78,5 +88,5 @@ export function useSideChats(conversationId: string) {
     [update],
   );
 
-  return { tabs: state.tabs, selected: state.selected, open, close, select };
+  return { tabs: state.tabs, selected: state.selected, open, openPending, close, select };
 }

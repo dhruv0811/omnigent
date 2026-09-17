@@ -45,7 +45,7 @@ import { useBrowserTabs } from "@/hooks/useBrowserTabs";
 import { useSideChats } from "@/hooks/useSideChats";
 import { SideChatPane } from "@/components/chat/SideChatPane";
 import { useChatStore } from "@/store/chatStore";
-import { supportsSideChat, usesNativeSideChatFork } from "@/lib/sideChat";
+import { SIDE_CHAT_COMMAND_PREFIX, supportsSideChat, usesNativeSideChatFork } from "@/lib/sideChat";
 import { createSideChat } from "@/lib/sessionsApi";
 import { useSessionAgent } from "@/hooks/useAgents";
 import type { SessionLiveness } from "@/hooks/useSessionLiveness";
@@ -773,21 +773,38 @@ function WorkspacePanelImpl({
     selectedFilePath === null &&
     selectedTerminalKey === null &&
     sideChats.selected !== null;
-  // Codex forks in-process from a typed `/side` (kept prompt-cache-warm), so its
-  // rail "+" create is deferred; every other harness forks server-side here.
-  const canCreateSideChat =
-    supportsSideChat(sideChatHarness) && !usesNativeSideChatFork(sideChatHarness);
-  const onNewSideChat = canCreateSideChat
+  // "New side chat" opens an EMPTY tab; the fork isn't created until the first
+  // message is sent in it (startPendingSideChat below). Offered on every harness
+  // that supports side chat.
+  const parentAgentId = useChatStore((s) => s.boundAgentId);
+  const onNewSideChat = supportsSideChat(sideChatHarness)
     ? () => {
-        createSideChat(conversationId).then(
-          ({ childSessionId }) => {
-            sideChats.open(childSessionId);
-            onRightRailTabChange("sidechat");
-          },
-          () => toast.error("Couldn't start a side chat for this session."),
-        );
+        sideChats.openPending();
+        onRightRailTabChange("sidechat");
       }
     : undefined;
+  // First message sent in a pending side-chat tab: create the fork now, then
+  // drop the pending tab (the real child's tab takes over). Codex forks
+  // in-process (its runner intercepts the `/side` message on the parent, kept
+  // prompt-cache-warm); every other harness forks server-side + launches a
+  // runner on the parent's host. Rejects so the composer can re-enable and keep
+  // the typed text for a retry.
+  const startPendingSideChat = (pendingId: string, text: string): Promise<void> => {
+    if (usesNativeSideChatFork(sideChatHarness)) {
+      if (parentAgentId === null) return Promise.reject(new Error("no agent"));
+      void useChatStore.getState().send(SIDE_CHAT_COMMAND_PREFIX + text, parentAgentId, undefined, {
+        pinnedConversationId: conversationId,
+      });
+      sideChats.close(pendingId);
+      return Promise.resolve();
+    }
+    return createSideChat(conversationId).then(({ childSessionId }) => {
+      // Seed the question so the real child auto-sends it once its agent binds,
+      // and open its tab via the shared sideChatToOpen path.
+      useChatStore.getState().openSideChatWithDraft(childSessionId, text);
+      sideChats.close(pendingId);
+    });
+  };
 
   // Memoized so FileViewer's Escape-to-close effect doesn't re-subscribe its
   // window keydown listener on every render — an inline arrow would change
@@ -1198,8 +1215,13 @@ function WorkspacePanelImpl({
           />
         ) : sideChatSelected && sideChats.selected !== null ? (
           // A side chat: a forked child conversation streamed here in its own
-          // scoped surface, beside the still-active main chat.
-          <SideChatPane key={sideChats.selected} childId={sideChats.selected} />
+          // scoped surface, beside the still-active main chat. A `pending:` tab
+          // has no child yet — its first send creates the fork.
+          <SideChatPane
+            key={sideChats.selected}
+            childId={sideChats.selected}
+            onStart={(text) => startPendingSideChat(sideChats.selected!, text)}
+          />
         ) : rightRailTab === "browser" && showBrowserTab ? (
           // Embedded browser (Electron only) — BrowserPane self-gates and
           // measures this rail slot to position the native view over it.

@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { readSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
+import { readSessionWorkspaceState, writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
 import { useSideChats } from "./useSideChats";
 
 afterEach(() => {
@@ -64,6 +64,27 @@ describe("side-chat soft tabs", () => {
     act(() => result.current.open("conv_side1"));
     expect(result.current.tabs).toEqual(["conv_side1", "conv_side2"]);
     expect(result.current.selected).toBe("conv_side1");
+  });
+
+  it("reloads its own tabs when the parent conversation changes without a remount", () => {
+    // WorkspacePanel isn't keyed by conversationId, so navigating between
+    // conversations re-renders the same hook instance with a new id — the tabs
+    // must follow, not linger from the previous conversation.
+    writeSessionWorkspaceState("session-a", {
+      openSideChats: ["conv_a1"],
+      selectedSideChatId: "conv_a1",
+    });
+    writeSessionWorkspaceState("session-b", {
+      openSideChats: ["conv_b1"],
+      selectedSideChatId: "conv_b1",
+    });
+    const { result, rerender } = renderHook(({ id }) => useSideChats(id), {
+      initialProps: { id: "session-a" },
+    });
+    expect(result.current.tabs).toEqual(["conv_a1"]);
+    rerender({ id: "session-b" });
+    expect(result.current.tabs).toEqual(["conv_b1"]);
+    expect(result.current.selected).toBe("conv_b1");
   });
 
   it("persists tabs and selection across remount, isolated per session", () => {

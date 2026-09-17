@@ -63,6 +63,11 @@ import { type Bubble, type RenderItem, bubblesEqual } from "@/lib/renderItems";
 import { getCurrentAuthorId } from "@/lib/identity";
 import { retryRateLimitedTurn, retrySession } from "@/lib/sessionsApi";
 import { useChatStore, type PendingUserMessage } from "@/store/chatStore";
+import { conversationRegistry } from "@/store/conversationRegistry";
+import {
+  ConversationScopeContext,
+  useScopedConversationId,
+} from "@/components/chat/conversationScope";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { UserMessageNav } from "@/components/UserMessageNav";
 import { isSessionScopedDecision, showsRoutingDecisionChip } from "@/lib/routingDecision";
@@ -622,7 +627,9 @@ const USER_MESSAGE_REMARK_REHYPE_OPTIONS: MessageResponseProps["remarkRehypeOpti
 };
 
 function UserBubble({ bubble }: { bubble: Extract<Bubble, { kind: "user" }> }) {
-  const sessionId = useChatStore((s) => s.conversationId);
+  // Scoped so a side-chat bubble builds attachment URLs against the CHILD, not
+  // the main conversation the root store projects.
+  const sessionId = useScopedConversationId();
   // Author labels only matter once the session is shared with someone else.
   const isSessionShared = useContext(SessionSharedContext);
   // - input_image: `imagePreview` picks the variant — an uploaded file, an
@@ -830,7 +837,11 @@ function AssistantBubble({
   // block exists. The "Working…" shimmer for the empty-items / streaming gap
   // is rendered at the page level, not inside this component.
   const sessionStatus = useChatStore((s) => s.sessionStatus);
-  const conversationId = useChatStore((s) => s.conversationId);
+  // Scoped so retry targets the conversation this bubble belongs to (the child
+  // in a side-chat pane), not whatever the root store currently projects.
+  const scopedConversationId = useContext(ConversationScopeContext);
+  const activeConversationId = useChatStore((s) => s.conversationId);
+  const conversationId = scopedConversationId ?? activeConversationId;
   // A pending elicitation means the turn is parked awaiting the user — still in
   // flight even when its lifecycle or the session status reads settled.
   const hasPendingElicitation = useChatStore((s) =>
@@ -844,8 +855,15 @@ function AssistantBubble({
     async (item: Extract<RenderItem, { kind: "error" }>) => {
       if (!conversationId) throw new Error("Session is not available");
       if (item.code === "rate_limit_exceeded") {
-        const current = useChatStore.getState();
-        if (current.conversationId !== conversationId) {
+        // Read a FRESH snapshot of the target conversation at click time: the
+        // scoped child's own entry in a side chat, else the root store. The
+        // child tab is fixed, so only the main chat guards against the user
+        // switching the active conversation out from under a queued retry.
+        const current = scopedConversationId
+          ? conversationRegistry.peek(scopedConversationId)?.getState()
+          : useChatStore.getState();
+        if (!current) throw new Error("The selected session has changed");
+        if (!scopedConversationId && useChatStore.getState().conversationId !== conversationId) {
           throw new Error("The selected session has changed");
         }
         if (!isLastAssistant) throw new Error("Only the latest failed turn can be retried");
@@ -867,7 +885,7 @@ function AssistantBubble({
         throw new Error("The session is already connected; no recovery was performed");
       }
     },
-    [conversationId, isLastAssistant],
+    [conversationId, scopedConversationId, isLastAssistant],
   );
 
   if (bubble.items.length === 0) return null;

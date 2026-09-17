@@ -3206,10 +3206,11 @@ function ComposerImpl(
     // guard so guarded no-ops don't emit, matching the disabled Send button.
     trackClick("chat.composer.send", "button");
 
-    // A generic (non-Codex) side chat forks the conversation onto a managed
-    // sandbox and opens it as a rail tab; the typed text seeds the new side
-    // chat's composer so it isn't fired at a still-launching runner. Codex forks
-    // in-process instead (its /side reaches the runner as plaintext).
+    // A generic (non-Codex) side chat forks the conversation and runs it on the
+    // SAME host/sandbox as the source (no new sandbox), then opens it as a rail
+    // tab; the typed text seeds the new side chat's composer so it isn't fired
+    // at a still-launching runner. Codex forks in-process instead (its /side
+    // reaches the runner as plaintext).
     const openGenericSideChat = (question: string) => {
       const sourceId = useChatStore.getState().conversationId;
       if (sourceId === null) return;
@@ -3220,7 +3221,7 @@ function ComposerImpl(
           // create keeps the user's typed question instead of dropping it.
           dirtyRef.current = true;
           setValue("");
-          useChatStore.getState().openSideChatWithDraft(childSessionId, question);
+          useChatStore.getState().openSideChatWithDraft(childSessionId, question, sourceId);
         },
         // Surface the failure as a toast, not an inline composer error; the
         // composer text is left intact for a retry.
@@ -3894,7 +3895,9 @@ function ComposerImpl(
                         if (sourceId === null) return;
                         createSideChat(sourceId).then(
                           ({ childSessionId }) =>
-                            useChatStore.setState({ sideChatToOpen: childSessionId }),
+                            useChatStore.setState({
+                              sideChatToOpen: { childId: childSessionId, parentId: sourceId },
+                            }),
                           () => toast.error("Couldn't start a side chat for this session."),
                         );
                       }

@@ -768,16 +768,22 @@ function WorkspacePanelImpl({
   // rekey it in place; otherwise open a fresh tab. AppShell reveals the rail.
   useEffect(() => {
     if (sideChatToOpen === null) return;
+    // Only the parent that owns this side chat consumes (and clears) the signal
+    // — a fork that resolves after the user navigated elsewhere waits for its
+    // own parent's rail rather than landing in whatever conversation is on
+    // screen now.
+    if (sideChatToOpen.parentId !== conversationId) return;
+    const { childId } = sideChatToOpen;
     const awaiting = awaitingPendingIdRef.current;
     if (awaiting !== null) {
-      sideChats.rekey(awaiting, sideChatToOpen);
+      sideChats.rekey(awaiting, childId);
       awaitingPendingIdRef.current = null;
     } else {
-      sideChats.open(sideChatToOpen);
+      sideChats.open(childId);
     }
     onRightRailTabChange("sidechat");
     clearSideChatToOpen();
-  }, [sideChatToOpen, sideChats, onRightRailTabChange, clearSideChatToOpen]);
+  }, [sideChatToOpen, conversationId, sideChats, onRightRailTabChange, clearSideChatToOpen]);
   const sideChatSelected =
     rightRailTab === "sidechat" &&
     selectedFilePath === null &&
@@ -818,7 +824,7 @@ function WorkspacePanelImpl({
       ({ childSessionId }) => {
         // Seed the question so the rekeyed child auto-sends it once its agent
         // binds; openSideChatWithDraft fires sideChatToOpen → the effect rekeys.
-        useChatStore.getState().openSideChatWithDraft(childSessionId, text);
+        useChatStore.getState().openSideChatWithDraft(childSessionId, text, conversationId);
       },
       (err) => {
         awaitingPendingIdRef.current = null;

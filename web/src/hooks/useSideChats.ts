@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { readSessionWorkspaceState, writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
 
 interface SideChatTabsState {
@@ -33,6 +33,13 @@ function readSideChatTabsState(conversationId: string): SideChatTabsState {
  */
 export function useSideChats(conversationId: string) {
   const [state, setState] = useState(() => readSideChatTabsState(conversationId));
+  // WorkspacePanel isn't remounted when the user navigates to another
+  // conversation (conversationId is a prop, not a key), so reload this
+  // conversation's own tabs on change — otherwise the previous conversation's
+  // side-chat tabs would linger in the new one's rail.
+  useEffect(() => {
+    setState(readSideChatTabsState(conversationId));
+  }, [conversationId]);
   const update = useCallback(
     (mutate: (current: SideChatTabsState) => SideChatTabsState) => {
       const next = mutate(readSideChatTabsState(conversationId));

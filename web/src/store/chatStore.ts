@@ -979,8 +979,13 @@ export interface AppChatState {
    * conversation-scoped) so a value set on the parent isn't lost to the entry
    * split. Set on the `/side` latch (`awaitingSideChatFor`) matching a
    * `session_created`; unlike the old flow there is no navigation.
+   *
+   * Carries `parentId` (the conversation the side chat belongs to) so the
+   * matching parent's rail consumes it — a fork that resolves after the user
+   * navigated to another conversation is NOT dropped into the wrong parent's
+   * tabs.
    */
-  sideChatToOpen: string | null;
+  sideChatToOpen: { childId: string; parentId: string } | null;
   /**
    * Initial composer text for a freshly-opened side chat, keyed by its child
    * conversation id. Set when a generic `/side <question>` opens an empty side
@@ -1041,9 +1046,10 @@ export interface AppChatState {
 export interface ChatActions {
   send: (text: string, agentId: string, files?: File[], opts?: SendOptions) => Promise<void>;
   clearSideChatToOpen: () => void;
-  /** Open a generic side chat as a rail tab, seeding its composer with `draft`
-   *  (the typed `/side` question) so it isn't lost while the fork launches. */
-  openSideChatWithDraft: (childSessionId: string, draft: string) => void;
+  /** Open a generic side chat as a rail tab under `parentId`, seeding its
+   *  composer with `draft` (the typed `/side` question) so it isn't lost while
+   *  the fork launches. */
+  openSideChatWithDraft: (childSessionId: string, draft: string, parentId: string) => void;
   /** Clear a side chat's seeded composer draft (called after it's consumed). */
   clearSideChatDraft: (childSessionId: string) => void;
   /**
@@ -1119,6 +1125,10 @@ export interface ChatActions {
     action: "accept" | "decline" | "cancel",
     content?: Record<string, unknown>,
     meta?: Record<string, unknown>,
+    // The conversation the elicitation belongs to. Omitted (undefined) targets
+    // the active conversation; a side-chat approval card passes its child id so
+    // the verdict resolves the CHILD's elicitation, not the main conversation's.
+    conversationId?: string,
   ) => Promise<void>;
   /**
    * Set sticky effort; PATCH only when the active session supports it.
@@ -2028,9 +2038,9 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
   clearSideChatToOpen: () => {
     useChatStore.setState({ sideChatToOpen: null });
   },
-  openSideChatWithDraft: (childSessionId, draft) => {
+  openSideChatWithDraft: (childSessionId, draft, parentId) => {
     useChatStore.setState((s) => ({
-      sideChatToOpen: childSessionId,
+      sideChatToOpen: { childId: childSessionId, parentId },
       sideChatDrafts: draft ? { ...s.sideChatDrafts, [childSessionId]: draft } : s.sideChatDrafts,
     }));
   },
@@ -2620,11 +2630,17 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
     }
   },
 
-  submitApproval: async (elicitationId, action, content, meta) => {
-    const sessionId = get().conversationId;
+  submitApproval: async (elicitationId, action, content, meta, conversationId) => {
+    // Operate on the passed conversation (a side-chat child) or the active one.
+    // A side-chat pane renders the same approval card but its elicitation lives
+    // in the CHILD's entry, so reading/writing the active conversation's blocks
+    // would answer the wrong session and leave the child blocked.
+    const sessionId = conversationId ?? get().conversationId;
     if (!sessionId) return;
+    const scopedState = conversationId ? (setterForState(conversationId) ?? get()) : get();
+    const write = setterFor(sessionId);
     const targetSessionId =
-      get().blocks.find(
+      scopedState.blocks.find(
         (b): b is ElicitationBlock => b.type === "elicitation" && b.elicitationId === elicitationId,
       )?.targetSessionId ?? sessionId;
     // Optimistically flip the matching elicitation block to
@@ -2641,7 +2657,7 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
       ...(content === undefined ? {} : { content }),
       ...(meta === undefined ? {} : { _meta: meta }),
     };
-    setActive((s) => ({
+    write((s) => ({
       blocks: s.blocks.map((b) =>
         b.type === "elicitation" && b.elicitationId === elicitationId
           ? { ...b, status: "responded", response: responseValue }
@@ -2671,7 +2687,7 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
       // outlive a switch away, and rolling back the VISIBLE conversation would
       // reopen an unrelated chat's card while leaving this one wrongly
       // answered.
-      setterFor(sessionId)((s) => ({
+      write((s) => ({
         blocks: s.blocks.map((b) =>
           b.type === "elicitation" && b.elicitationId === elicitationId
             ? { ...b, status: "pending", response: null }
@@ -6736,7 +6752,7 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
         // only by an explicit side-chat request, so it is rare in practice.)
         return {
           awaitingSideChatFor: null,
-          sideChatToOpen: event.childSessionId,
+          sideChatToOpen: { childId: event.childSessionId, parentId: event.conversationId },
         };
       });
       // Sub-agent spawn signal. Invalidate the parent's child-sessions

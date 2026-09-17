@@ -6495,7 +6495,7 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
       // The side chat opens in place (as a rail tab), so the user is NOT
       // navigated away from the main conversation.
       expect(after.redirectToConversationId).toBeNull();
-      expect(after.sideChatToOpen).toBe("conv_side");
+      expect(after.sideChatToOpen).toEqual({ childId: "conv_side", parentId: "conv_parent" });
       // one-shot: a later spawn must not open another tab
       expect(after.awaitingSideChatFor).toBeNull();
     });
@@ -6536,7 +6536,10 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
       // sideChatToOpen is app-global; awaitingSideChatFor is the
       // conversation-scoped latch (read from the entry).
       expect(useChatStore.getState().redirectToConversationId).toBeNull();
-      expect(useChatStore.getState().sideChatToOpen).toBe("conv_side");
+      expect(useChatStore.getState().sideChatToOpen).toEqual({
+        childId: "conv_side",
+        parentId: "conv_race",
+      });
       expect(parent.get().awaitingSideChatFor).toBeNull();
     });
 
@@ -7279,6 +7282,36 @@ describe("chatStore — submitApproval", () => {
     expect(parentCalls).toHaveLength(0);
     const body = JSON.parse((childCalls[0]![1] as RequestInit).body as string);
     expect(body).toEqual({ action: "accept" });
+  });
+
+  it("targets the passed conversation (side chat), not the active one", async () => {
+    // A side-chat approval card passes its child id. The elicitation lives in
+    // the CHILD's entry, not the active conversation's — resolve it there, and
+    // leave the active (main) conversation untouched.
+    const child = bindConversationForTest("conv_side_x", {
+      blocks: [elicitationBlock("elic_side")],
+    });
+    // Bind the parent LAST so it is the active conversation with no matching
+    // block; the child stays a background registry entry.
+    bindConversationForTest("conv_parent_x", { blocks: [] });
+
+    await useChatStore
+      .getState()
+      .submitApproval("elic_side", "accept", undefined, undefined, "conv_side_x");
+
+    const childCalls = fetchMock.mock.calls.filter(([u]) =>
+      String(u).endsWith("/v1/sessions/conv_side_x/elicitations/elic_side/resolve"),
+    );
+    const parentCalls = fetchMock.mock.calls.filter(([u]) =>
+      String(u).endsWith("/v1/sessions/conv_parent_x/elicitations/elic_side/resolve"),
+    );
+    expect(childCalls).toHaveLength(1);
+    expect(parentCalls).toHaveLength(0);
+
+    // The child's block flipped; the active parent is untouched.
+    const childBlock = child.get().blocks[0];
+    expect(childBlock?.type === "elicitation" && childBlock.status).toBe("responded");
+    expect(useChatStore.getState().blocks).toHaveLength(0);
   });
 
   it("rolls back to 'pending' when the network call fails", async () => {

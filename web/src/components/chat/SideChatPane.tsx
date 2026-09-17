@@ -28,10 +28,35 @@ import { useChatStore, ensureConversationStreamed } from "@/store/chatStore";
 import { useConversationEntryState } from "@/hooks/useConversationEntryState";
 import { useDictationInsert } from "@/hooks/useDictationInsert";
 import { usesNativeSideChatFork } from "@/lib/sideChat";
+import { ConversationScopeContext } from "@/components/chat/conversationScope";
 
 /** A `pending:` tab has no child session yet; its first send creates the fork. */
 function isPendingSideChat(id: string): boolean {
   return id.startsWith("pending:");
+}
+
+// The forked-in item ids to hide are captured once per child and PERSISTED, so
+// leaving the tab (which unmounts this pane) or reloading doesn't recapture the
+// side chat's own completed turns as inherited history and blank the transcript.
+// ponytail: one small localStorage key per child; entries are tiny id lists,
+// orphaned on child deletion — prune only if this ever grows.
+function inheritedBoundaryKey(childId: string): string {
+  return `omnigent.sideChatInherited:${childId}`;
+}
+function readInheritedBoundary(childId: string): Set<string> | null {
+  try {
+    const raw = localStorage.getItem(inheritedBoundaryKey(childId));
+    return raw ? new Set(JSON.parse(raw) as string[]) : null;
+  } catch {
+    return null;
+  }
+}
+function writeInheritedBoundary(childId: string, ids: Set<string>): void {
+  try {
+    localStorage.setItem(inheritedBoundaryKey(childId), JSON.stringify([...ids]));
+  } catch {
+    // Storage disabled/full — the boundary just won't survive a reload.
+  }
 }
 
 // Accurate for every harness: a side chat is a fork that stays out of the main
@@ -92,21 +117,34 @@ export function SideChatPane({
   // already holds only its own turns (context lives in the native thread), so
   // filtering there would wrongly hide the side chat's first question.
   const filterHistory = !usesNativeSideChatFork(sessionHarness);
-  const inheritedRef = useRef<Set<string> | null>(null);
+  // Load the persisted boundary when the child changes (mount / rekey); the
+  // in-mount ref just avoids re-reading storage every render.
+  const boundaryRef = useRef<{ childId: string; ids: Set<string> | null } | null>(null);
+  if (boundaryRef.current === null || boundaryRef.current.childId !== childId) {
+    boundaryRef.current = {
+      childId,
+      ids: filterHistory && !pending ? readInheritedBoundary(childId) : null,
+    };
+  }
+  // Capture once, before the side chat's first turn arrives: on a fresh generic
+  // fork the child's blocks are its inherited (copied) history, so snapshot them
+  // and persist so subsequent mounts/reloads hide the same set, not new turns.
   if (
-    inheritedRef.current === null &&
+    boundaryRef.current.ids === null &&
     !pending &&
     filterHistory &&
     !loadingConversation &&
     blocks.length > 0
   ) {
-    inheritedRef.current = new Set(
+    const ids = new Set(
       blocks
         .map((b) => (b as { ctx?: { itemId?: string | null } }).ctx?.itemId)
         .filter((id): id is string => typeof id === "string"),
     );
+    boundaryRef.current.ids = ids;
+    writeInheritedBoundary(childId, ids);
   }
-  const inherited = inheritedRef.current;
+  const inherited = boundaryRef.current.ids;
   const visibleBlocks = useMemo(
     () =>
       inherited === null
@@ -160,56 +198,58 @@ export function SideChatPane({
   const isEmpty = bubbles.length === 0 && !loadingConversation && !loadFailed;
 
   return (
-    <div className="side-chat-backdrop flex h-full min-h-0 flex-col">
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4">
-        {loadFailed ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-            <TriangleAlertIcon className="size-6 text-muted-foreground" />
-            <p className="text-ui font-medium text-foreground">Couldn’t load this side chat</p>
-            <p className="max-w-[36ch] text-sm text-muted-foreground">
-              {conversationLoadError?.message ?? "Please try again."}
-            </p>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="mt-1"
-              onClick={() => void ensureConversationStreamed(childId)}
-            >
-              Retry
-            </Button>
-          </div>
-        ) : isEmpty ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-            <MessagesSquareIcon className="size-6 text-muted-foreground" />
-            <p className="text-ui font-medium text-foreground">Side chat</p>
-            <p className="max-w-[36ch] text-sm text-muted-foreground">{EMPTY_STATE_BODY}</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4">
-            {bubbles.map((bubble, index) => (
-              <BubbleView
-                key={bubbleKey(bubble)}
-                bubble={bubble}
-                isLastAssistant={index === lastAssistantIndex}
-                showsWorking={showsWorking}
-              />
-            ))}
-            {shouldShowWorkingIndicator(showsWorking, bubbles) && <WorkingIndicator />}
-            <div ref={bottomRef} />
-          </div>
-        )}
+    <ConversationScopeContext.Provider value={pending ? null : childId}>
+      <div className="side-chat-backdrop flex h-full min-h-0 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4">
+          {loadFailed ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+              <TriangleAlertIcon className="size-6 text-muted-foreground" />
+              <p className="text-ui font-medium text-foreground">Couldn’t load this side chat</p>
+              <p className="max-w-[36ch] text-sm text-muted-foreground">
+                {conversationLoadError?.message ?? "Please try again."}
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="mt-1"
+                onClick={() => void ensureConversationStreamed(childId)}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : isEmpty ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+              <MessagesSquareIcon className="size-6 text-muted-foreground" />
+              <p className="text-ui font-medium text-foreground">Side chat</p>
+              <p className="max-w-[36ch] text-sm text-muted-foreground">{EMPTY_STATE_BODY}</p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {bubbles.map((bubble, index) => (
+                <BubbleView
+                  key={bubbleKey(bubble)}
+                  bubble={bubble}
+                  isLastAssistant={index === lastAssistantIndex}
+                  showsWorking={showsWorking}
+                />
+              ))}
+              {shouldShowWorkingIndicator(showsWorking, bubbles) && <WorkingIndicator />}
+              <div ref={bottomRef} />
+            </div>
+          )}
+        </div>
+        <div className="shrink-0 p-3">
+          <SideChatComposer
+            childId={childId}
+            agentId={boundAgentId}
+            busy={showsWorking}
+            pending={pending}
+            onStart={onStart}
+          />
+        </div>
       </div>
-      <div className="shrink-0 p-3">
-        <SideChatComposer
-          childId={childId}
-          agentId={boundAgentId}
-          busy={showsWorking}
-          pending={pending}
-          onStart={onStart}
-        />
-      </div>
-    </div>
+    </ConversationScopeContext.Provider>
   );
 }
 

@@ -107,7 +107,7 @@ import {
   type ConversationsInfiniteData,
 } from "@/lib/sessionListCache";
 import { recordOptimisticTitle } from "@/lib/optimisticTitles";
-import { isSideChatCommand, supportsSideChat } from "@/lib/sideChat";
+import { isSideChatCommand, usesNativeSideChatFork } from "@/lib/sideChat";
 // Re-exported below so existing `@/store/chatStore` importers keep working; the
 // pure helpers live in a leaf module so low-level session hooks can gate on temp
 // ids without an import cycle back to the store.
@@ -972,15 +972,24 @@ export interface AppChatState {
    */
   redirectToConversationId: string | null;
   /**
-   * Side-chat child to reveal in the sub-agents rail, or null. `AppShell`
-   * observes it and, once the router has navigated to that child, switches the
-   * rail to Agents and clears it. App-global (NOT conversation-scoped): it is
-   * set while the main chat is still active but must survive the navigation to
-   * the child to be read there — a per-conversation value would be written to
-   * the main entry and read as null on the child. Navigation itself rides
-   * `redirectToConversationId`.
+   * Side-chat child to open as a soft tab in the Workspace rail, or null.
+   * `AppShell` observes it, opens/selects that child's side-chat tab on the
+   * (still-active) main chat, and clears it — the user stays in the main
+   * conversation, the side chat lives beside it. App-global (NOT
+   * conversation-scoped) so a value set on the parent isn't lost to the entry
+   * split. Set on the `/side` latch (`awaitingSideChatFor`) matching a
+   * `session_created`; unlike the old flow there is no navigation.
    */
-  sideChatRailRequest: string | null;
+  sideChatToOpen: string | null;
+  /**
+   * Initial composer text for a freshly-opened side chat, keyed by its child
+   * conversation id. Set when a generic `/side <question>` opens an empty side
+   * chat (its own managed fork) so the typed question isn't lost — the side
+   * chat's composer seeds from and consumes it on mount rather than firing a
+   * turn at a runner that is still launching. App-global (the side chat lives in
+   * the main chat's rail, not its own entry).
+   */
+  sideChatDrafts: Record<string, string>;
   /**
    * Messages submitted while the agent is busy, held client-side (not yet
    * POSTed) and shown in the composer's queue strip. The head is flushed
@@ -1031,7 +1040,12 @@ export interface AppChatState {
 /** Actions exposed on the root store. */
 export interface ChatActions {
   send: (text: string, agentId: string, files?: File[], opts?: SendOptions) => Promise<void>;
-  clearSideChatRailRequest: () => void;
+  clearSideChatToOpen: () => void;
+  /** Open a generic side chat as a rail tab, seeding its composer with `draft`
+   *  (the typed `/side` question) so it isn't lost while the fork launches. */
+  openSideChatWithDraft: (childSessionId: string, draft: string) => void;
+  /** Clear a side chat's seeded composer draft (called after it's consumed). */
+  clearSideChatDraft: (childSessionId: string) => void;
   /**
    * Queue a message client-side instead of POSTing it now, for a send made
    * while the agent is busy. The head is flushed automatically (FIFO, one per
@@ -1764,7 +1778,8 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
   pendingModelChange: null,
   sessionHarness: null,
   awaitingSideChatFor: null,
-  sideChatRailRequest: null,
+  sideChatToOpen: null,
+  sideChatDrafts: {},
   subAgentName: null,
   contextWindow: null,
   tokensUsed: null,
@@ -2010,8 +2025,24 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
     }
   },
 
-  clearSideChatRailRequest: () => {
-    useChatStore.setState({ sideChatRailRequest: null });
+  clearSideChatToOpen: () => {
+    useChatStore.setState({ sideChatToOpen: null });
+  },
+  openSideChatWithDraft: (childSessionId, draft) => {
+    useChatStore.setState((s) => ({
+      sideChatToOpen: childSessionId,
+      sideChatDrafts: draft ? { ...s.sideChatDrafts, [childSessionId]: draft } : s.sideChatDrafts,
+    }));
+  },
+  clearSideChatDraft: (childSessionId) => {
+    useChatStore.setState((s) => {
+      if (!(childSessionId in s.sideChatDrafts)) return {};
+      return {
+        sideChatDrafts: Object.fromEntries(
+          Object.entries(s.sideChatDrafts).filter(([key]) => key !== childSessionId),
+        ),
+      };
+    });
   },
   send: async (text, agentId, files, opts) => {
     if (!agentId) {
@@ -2043,7 +2074,12 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
     // A codex `/side` command is forked into its own side chat: it gets no
     // bubble here, and this session must not latch into "Working…" either —
     // nothing runs here, so nothing would ever arrive to clear it.
-    const opensSideChat = supportsSideChat(get().sessionHarness) && isSideChatCommand(text.trim());
+    // Only the native-fork harness (Codex) routes `/side` through `send` as
+    // plaintext — the runner forks in-process. Generic harnesses intercept
+    // `/side` in the composer and call the server side-chat endpoint instead, so
+    // their `/side` text never reaches `send`.
+    const opensSideChat =
+      usesNativeSideChatFork(get().sessionHarness) && isSideChatCommand(text.trim());
     if (opensSideChat) {
       useChatStore.setState({ awaitingSideChatFor: pinnedId ?? get().conversationId });
     }
@@ -3239,6 +3275,27 @@ function mirrorActiveEntry(): void {
   const entry = conversationRegistry.peek(activeId);
   if (entry === undefined) return;
   rootSetState(entry.getState() as Parameters<typeof rootSetState>[0]);
+}
+
+/**
+ * Bind a conversation's live stream WITHOUT making it the on-screen
+ * conversation, so a side chat can stream in its Workspace-rail tab beside the
+ * still-active main chat. The cold path of `switchTo` minus
+ * `setActive`/`mirrorActiveEntry` — it hydrates the entry and opens its stream,
+ * but the root projection (what `useChatStore` reads) keeps pointing at the main
+ * chat; a side-chat surface reads the child entry via `useConversationEntryState`.
+ *
+ * No-op when the entry is already live (its stream is bound or binding), and for
+ * a blank or client-only (temp) id.
+ *
+ * @param id Conversation id to stream, e.g. a side-chat child.
+ */
+export async function ensureConversationStreamed(id: string): Promise<void> {
+  if (id === "" || isTempConvId(id)) return;
+  if (conversationRegistry.peek(id) !== undefined) return;
+  const entry = conversationRegistry.acquire(id);
+  entry.setState({ loadingConversation: true });
+  await bindStream(id, entrySetter(entry), entryGetter(entry), true);
 }
 
 // Route `useChatStore.setState` so a conversation-scoped write reaches the
@@ -6658,22 +6715,20 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
       finalizeCurrentActive("cancelled", event.responseId, sourceConversationId);
       return;
     case "session_created":
-      // A fork the user asked for with `/side`: follow them into it and reveal
-      // the rail, so the move out of the main chat is visible. Guarded on
-      // `awaitingSideChatFor` so an agent-spawned sub-agent never navigates
-      // anyone. Navigation reuses `redirectToConversationId` (ChatPage drives
-      // the router).
+      // A side chat the user asked for (via `/side`, the `+` tray, or the rail's
+      // "+"): open it as a soft tab in the main chat's Workspace rail — the user
+      // stays in the main conversation, the side chat streams beside it. Guarded
+      // on `awaitingSideChatFor` so an agent-spawned sub-agent never opens a tab.
       useChatStore.setState((s) => {
         if (!event.childSessionId || s.awaitingSideChatFor !== event.conversationId) return {};
-        // Open on the user's explicit /side latch: they just asked for a side
-        // chat on THIS parent, so the child arriving under it is the one to
-        // reveal and follow. (A concurrent ordinary sub-agent under the same
-        // parent could in theory be opened instead — a known, narrow edge; the
-        // latch is armed only by an explicit /side, so it is rare in practice.)
+        // Open on the user's explicit side-chat latch: they just asked for a
+        // side chat on THIS parent, so the child arriving under it is the one to
+        // open. (A concurrent ordinary sub-agent under the same parent could in
+        // theory be opened instead — a known, narrow edge; the latch is armed
+        // only by an explicit side-chat request, so it is rare in practice.)
         return {
           awaitingSideChatFor: null,
-          redirectToConversationId: event.childSessionId,
-          sideChatRailRequest: event.childSessionId,
+          sideChatToOpen: event.childSessionId,
         };
       });
       // Sub-agent spawn signal. Invalidate the parent's child-sessions

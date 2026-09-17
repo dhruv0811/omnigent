@@ -6,6 +6,7 @@ import {
   GlobeIcon,
   Loader2Icon,
   MaximizeIcon,
+  MessagesSquareIcon,
   MinimizeIcon,
   PlusIcon,
   TerminalIcon,
@@ -41,6 +42,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BrowserPane } from "@/components/BrowserPane/BrowserPane";
 import { useBrowserTabs } from "@/hooks/useBrowserTabs";
+import { useSideChats } from "@/hooks/useSideChats";
+import { SideChatPane } from "@/components/chat/SideChatPane";
+import { useChatStore } from "@/store/chatStore";
+import { supportsSideChat, usesNativeSideChatFork } from "@/lib/sideChat";
+import { createSideChat } from "@/lib/sessionsApi";
 import { useSessionAgent } from "@/hooks/useAgents";
 import type { SessionLiveness } from "@/hooks/useSessionLiveness";
 import { terminalTabKey, useCreateTerminal, useTerminals } from "@/hooks/useTerminals";
@@ -124,6 +130,7 @@ function NewTabMenu({
   conversationId,
   onOpenTerminal,
   onOpenBrowser,
+  onOpenSideChat,
   onCreateStart,
   onCreateError,
   triggerClassName,
@@ -133,6 +140,9 @@ function NewTabMenu({
   /** Open a freshly-created terminal as a rail tab by its tab key. */
   onOpenTerminal: (key: string) => void;
   onOpenBrowser?: () => void;
+  /** Open a new side chat (a fork of this conversation) as a rail tab. Absent
+   *  when the session can't host one (e.g. Codex uses its typed `/side`). */
+  onOpenSideChat?: () => void;
   /** Called when a shell create is initiated (before the POST resolves), so
    *  the shell can be focused as soon as its tab appears in the list. */
   onCreateStart?: () => void;
@@ -158,7 +168,7 @@ function NewTabMenu({
   // declare a non-empty ``terminals:`` block.
   const declaredTerminals = agent?.terminals ?? [];
   const canOpenShell = declaredTerminals.length > 0;
-  if (!canOpenShell && !onOpenBrowser) return null;
+  if (!canOpenShell && !onOpenBrowser && !onOpenSideChat) return null;
 
   // The default launched by the primary segment: the remembered pick when it
   // is still a declared type, else the first declared name. Non-null here since
@@ -249,6 +259,12 @@ function NewTabMenu({
           <DropdownMenuItem onSelect={onOpenBrowser} className="cursor-pointer">
             <GlobeIcon className="size-4" />
             Browser
+          </DropdownMenuItem>
+        )}
+        {onOpenSideChat && (
+          <DropdownMenuItem onSelect={onOpenSideChat} className="cursor-pointer">
+            <MessagesSquareIcon className="size-4" />
+            Side chat
           </DropdownMenuItem>
         )}
         {canOpenShell &&
@@ -733,6 +749,46 @@ function WorkspacePanelImpl({
         onRightRailTabChange("browser");
       }
     : undefined;
+
+  // ── Side chats: rail tabs backed by forked child conversations. ──────────
+  const sideChats = useSideChats(conversationId);
+  const sideChatHarness = useChatStore((s) => s.sessionHarness);
+  const sideChatToOpen = useChatStore((s) => s.sideChatToOpen);
+  const clearSideChatToOpen = useChatStore((s) => s.clearSideChatToOpen);
+  const activeSideChatRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    activeSideChatRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [sideChats.selected, rightRailTab]);
+  // A side chat the server just created (Codex's native fork, or the generic
+  // `POST /side-chat`) announces itself via `sideChatToOpen`; open it as a tab
+  // and clear the one-shot signal. AppShell reveals the rail in parallel.
+  useEffect(() => {
+    if (sideChatToOpen === null) return;
+    sideChats.open(sideChatToOpen);
+    onRightRailTabChange("sidechat");
+    clearSideChatToOpen();
+  }, [sideChatToOpen, sideChats, onRightRailTabChange, clearSideChatToOpen]);
+  const sideChatSelected =
+    rightRailTab === "sidechat" &&
+    selectedFilePath === null &&
+    selectedTerminalKey === null &&
+    sideChats.selected !== null;
+  // Codex forks in-process from a typed `/side` (kept prompt-cache-warm), so its
+  // rail "+" create is deferred; every other harness forks server-side here.
+  const canCreateSideChat =
+    supportsSideChat(sideChatHarness) && !usesNativeSideChatFork(sideChatHarness);
+  const onNewSideChat = canCreateSideChat
+    ? () => {
+        createSideChat(conversationId).then(
+          ({ childSessionId }) => {
+            sideChats.open(childSessionId);
+            onRightRailTabChange("sidechat");
+          },
+          () => toast.error("Couldn't start a side chat for this session."),
+        );
+      }
+    : undefined;
+
   // Memoized so FileViewer's Escape-to-close effect doesn't re-subscribe its
   // window keydown listener on every render — an inline arrow would change
   // identity each render and thrash the effect's add/remove cycle.
@@ -754,11 +810,13 @@ function WorkspacePanelImpl({
     !pending &&
     (openFiles.length > 0 ||
       openTerminals.length > 0 ||
+      sideChats.tabs.length > 0 ||
       (showBrowserTab && browsers.tabs.length > 0));
   const showEmptyNewTab =
     !pending &&
     openFiles.length === 0 &&
     openTerminals.length === 0 &&
+    sideChats.tabs.length === 0 &&
     (!showBrowserTab || browsers.tabs.length === 0);
   const effectiveHandleProps = pending
     ? {
@@ -909,6 +967,7 @@ function WorkspacePanelImpl({
               ? "__pending__"
               : selectedFilePath !== null ||
                   (browserSelected && browsers.selected !== null) ||
+                  sideChatSelected ||
                   (selectedTerminalKey !== null && openTerminals.includes(selectedTerminalKey))
                 ? "__tab__"
                 : rightRailTab
@@ -1005,6 +1064,50 @@ function WorkspacePanelImpl({
                     </button>
                   </div>
                 ))}
+              {sideChats.tabs.map((childId, index) => {
+                const active = sideChatSelected && sideChats.selected === childId;
+                const label = `Side chat ${index + 1}`;
+                return (
+                  <div
+                    key={childId}
+                    ref={active ? activeSideChatRef : null}
+                    className={cn(
+                      "flex h-[24px] shrink-0 items-center gap-[6px] rounded-md px-2 text-ui font-medium leading-5 transition-colors",
+                      active
+                        ? "bg-[color-mix(in_srgb,var(--muted-foreground)_15%,var(--card))] text-foreground"
+                        : "text-muted-foreground hover:bg-[color-mix(in_srgb,var(--muted-foreground)_15%,var(--card))] hover:text-foreground",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      className="flex items-center gap-1"
+                      onAuxClick={(event) => {
+                        if (event.button === 1) {
+                          event.preventDefault();
+                          sideChats.close(childId);
+                        }
+                      }}
+                      onClick={() => {
+                        sideChats.select(childId);
+                        onRightRailTabChange("sidechat");
+                      }}
+                    >
+                      <MessagesSquareIcon className="size-4" />
+                      {label}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Close ${label}`}
+                      className="flex size-4 items-center justify-center rounded hover:bg-muted"
+                      onClick={() => sideChats.close(childId)}
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
             {/* "+" trails the last tab but sits OUTSIDE the scroller, so it
                 stays pinned (never scrolls under / overlaps the tabs) when they
@@ -1013,6 +1116,7 @@ function WorkspacePanelImpl({
             <NewTabMenu
               conversationId={conversationId}
               onOpenBrowser={addBrowser}
+              onOpenSideChat={onNewSideChat}
               onCreateError={onShellCreateFailed}
               onOpenTerminal={openTerminalTab}
               onCreateStart={onShellCreateStart}
@@ -1029,6 +1133,7 @@ function WorkspacePanelImpl({
           <NewTabMenu
             conversationId={conversationId}
             onOpenBrowser={addBrowser}
+            onOpenSideChat={onNewSideChat}
             onOpenTerminal={openTerminalTab}
             onCreateStart={onShellCreateStart}
             onCreateError={onShellCreateFailed}
@@ -1091,6 +1196,10 @@ function WorkspacePanelImpl({
             onCommentsOpenChange={onCommentsOpenChange}
             sort={filesPanelSort}
           />
+        ) : sideChatSelected && sideChats.selected !== null ? (
+          // A side chat: a forked child conversation streamed here in its own
+          // scoped surface, beside the still-active main chat.
+          <SideChatPane key={sideChats.selected} childId={sideChats.selected} />
         ) : rightRailTab === "browser" && showBrowserTab ? (
           // Embedded browser (Electron only) — BrowserPane self-gates and
           // measures this rail slot to position the native view over it.

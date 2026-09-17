@@ -6472,14 +6472,15 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
   });
 
   describe("session.created", () => {
-    it("opens the side chat the user asked for with /side", () => {
+    it("opens the side chat the user asked for as a rail tab", () => {
       // `awaitingSideChatFor` is set when the command is sent; the fork's
-      // session.created then moves the user into it and reveals the rail.
+      // session.created then opens it as a soft tab in the rail — no navigation,
+      // the user stays in the main chat.
       useChatStore.setState({
         conversationId: "conv_parent",
         awaitingSideChatFor: "conv_parent",
         redirectToConversationId: null,
-        sideChatRailRequest: null,
+        sideChatToOpen: null,
       });
 
       handleSessionEvent({
@@ -6491,18 +6492,20 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
       } as SessionCreatedEvent);
 
       const after = useChatStore.getState();
-      expect(after.redirectToConversationId).toBe("conv_side");
-      expect(after.sideChatRailRequest).toBe("conv_side");
-      // one-shot: a later spawn must not move the user again
+      // The side chat opens in place (as a rail tab), so the user is NOT
+      // navigated away from the main conversation.
+      expect(after.redirectToConversationId).toBeNull();
+      expect(after.sideChatToOpen).toBe("conv_side");
+      // one-shot: a later spawn must not open another tab
       expect(after.awaitingSideChatFor).toBeNull();
     });
 
-    it("does not move the user for an agent-spawned sub-agent", () => {
+    it("does not open a tab for an agent-spawned sub-agent", () => {
       // awaitingSideChatFor is conversation-scoped, so bind a fresh conversation
-      // to start it clean; sideChatRailRequest + redirectToConversationId are
-      // app-global, so reset and read them globally.
+      // to start it clean; sideChatToOpen is app-global, so reset and read it
+      // globally.
       bindConversationForTest("conv_agent_spawn", { awaitingSideChatFor: null });
-      useChatStore.setState({ redirectToConversationId: null, sideChatRailRequest: null });
+      useChatStore.setState({ redirectToConversationId: null, sideChatToOpen: null });
 
       handleSessionEvent({
         type: "session_created",
@@ -6513,14 +6516,14 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
       } as SessionCreatedEvent);
 
       expect(useChatStore.getState().redirectToConversationId).toBeNull();
-      expect(useChatStore.getState().sideChatRailRequest).toBeNull();
+      expect(useChatStore.getState().sideChatToOpen).toBeNull();
     });
 
     it("opens the awaited side chat on the /side latch", () => {
-      // The child arriving under the parent the user armed with /side is
-      // revealed and followed.
+      // The child arriving under the parent the user armed with /side is opened
+      // as a rail tab.
       const parent = bindConversationForTest("conv_race", { awaitingSideChatFor: "conv_race" });
-      useChatStore.setState({ redirectToConversationId: null, sideChatRailRequest: null });
+      useChatStore.setState({ redirectToConversationId: null, sideChatToOpen: null });
 
       handleSessionEvent({
         type: "session_created",
@@ -6530,10 +6533,10 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
         parentSessionId: "conv_race",
       } as SessionCreatedEvent);
 
-      // redirect + rail request are app-global; awaitingSideChatFor is the
+      // sideChatToOpen is app-global; awaitingSideChatFor is the
       // conversation-scoped latch (read from the entry).
-      expect(useChatStore.getState().redirectToConversationId).toBe("conv_side");
-      expect(useChatStore.getState().sideChatRailRequest).toBe("conv_side");
+      expect(useChatStore.getState().redirectToConversationId).toBeNull();
+      expect(useChatStore.getState().sideChatToOpen).toBe("conv_side");
       expect(parent.get().awaitingSideChatFor).toBeNull();
     });
 

@@ -81,7 +81,7 @@ import {
   isSessionSharedWithOthers,
 } from "@/lib/permissionsApi";
 import { getCurrentAuthorId } from "@/lib/identity";
-import { retrySession } from "@/lib/sessionsApi";
+import { createSideChat, retrySession } from "@/lib/sessionsApi";
 import { codexEffortLevelsForModel, findNativeModelOption } from "@/lib/codexNativeModels";
 import { modelConfigurationSourceRows } from "@/lib/modelConfigurationSource";
 import {
@@ -102,7 +102,12 @@ import {
   nativeCodingAgentForSubagentWrapper,
   WRAPPER_LABEL_KEY,
 } from "@/lib/nativeCodingAgents";
-import { isSideChatCommand, SIDE_CHAT_COMMAND_PREFIX, supportsSideChat } from "@/lib/sideChat";
+import {
+  isSideChatCommand,
+  SIDE_CHAT_COMMAND_PREFIX,
+  supportsSideChat,
+  usesNativeSideChatFork,
+} from "@/lib/sideChat";
 import { readAlwaysSteer } from "@/lib/alwaysSteerPreferences";
 import { DEVIN_NATIVE_PERMISSION_MODES } from "@/lib/nativeHarnessModes";
 import { readSubmitWithModEnter } from "@/lib/composerSendShortcutPreferences";
@@ -939,8 +944,10 @@ export function ChatPage() {
       const chat = useChatStore.getState();
       // A codex /side command opens its own side chat off the parent thread, so
       // it must POST now even mid-turn rather than park in the queue (see the
-      // matching gate in the store's send()). Mirror that gate here.
-      const opensSideChat = supportsSideChat(chat.sessionHarness) && isSideChatCommand(text.trim());
+      // matching gate in the store's send()). Only the native-fork harness
+      // routes /side through send; generic /side is intercepted in the composer.
+      const opensSideChat =
+        usesNativeSideChatFork(chat.sessionHarness) && isSideChatCommand(text.trim());
       if (
         shouldQueueSend(
           chat.conversationId,
@@ -3198,6 +3205,23 @@ function ComposerImpl(
     // guard so guarded no-ops don't emit, matching the disabled Send button.
     trackClick("chat.composer.send", "button");
 
+    // A generic (non-Codex) side chat forks the conversation onto a managed
+    // sandbox and opens it as a rail tab; the typed text seeds the new side
+    // chat's composer so it isn't fired at a still-launching runner. Codex forks
+    // in-process instead (its /side reaches the runner as plaintext).
+    const openGenericSideChat = (question: string) => {
+      const sourceId = useChatStore.getState().conversationId;
+      if (sourceId === null) return;
+      dirtyRef.current = true;
+      setValue("");
+      setCommandError(null);
+      createSideChat(sourceId).then(
+        ({ childSessionId }) =>
+          useChatStore.getState().openSideChatWithDraft(childSessionId, question),
+        () => setCommandError("Couldn't start a side chat for this session."),
+      );
+    };
+
     // Slash command path: the first token must read as "/name" (the shared
     // isSlashCommandText guard — file paths like "/Users/foo/bar.txt" don't
     // match, while args after the name may carry paths or URLs, e.g.
@@ -3249,6 +3273,13 @@ function ComposerImpl(
         executeSlashCommand(cmd, arg);
         return;
       }
+      // /side opens a side chat. Codex forks in-process (falls through to the
+      // plaintext path so its runner forks); every other harness forks
+      // server-side here into an empty side chat, carrying the typed question.
+      if (cmd === "/side" && !usesNativeSideChatFork(sessionHarness)) {
+        openGenericSideChat(trimmed.slice(cmd.length).trim());
+        return;
+      }
       // Known skill on an in-process session: send a `slash_command` event
       // (the REPL's wire shape) so the server resolves the skill and
       // injects its instructions, instead of the agent seeing the literal
@@ -3290,11 +3321,14 @@ function ComposerImpl(
         ),
       };
       const serialized = serializeReplyDraft(outgoing);
-      if (sideChat && supportsSideChat(sessionHarness)) {
-        // Route the quoted selection + question to a side chat: the /side
-        // pipeline keys off the leading command and forks. No main-chat bubble
-        // is kept for a side chat, so no reply-draft snapshot is persisted.
+      if (sideChat && usesNativeSideChatFork(sessionHarness)) {
+        // Codex: the /side pipeline keys off the leading command and forks
+        // in-process. No main-chat bubble is kept, so no reply-draft snapshot.
         onSend(SIDE_CHAT_COMMAND_PREFIX + serialized, sendFiles);
+      } else if (sideChat && supportsSideChat(sessionHarness)) {
+        // Generic: fork onto a managed side chat, seeding its composer with the
+        // quoted selection + question (no main-chat bubble either).
+        openGenericSideChat(serialized);
       } else {
         onSend(serialized, sendFiles, snapshotReplyDraft(outgoing));
       }

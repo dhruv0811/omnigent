@@ -861,6 +861,31 @@ export async function forkSession(
 }
 
 /**
+ * Open a generic side chat by forking the conversation onto its own managed
+ * sandbox, and return the fork's session id so the caller can open it as a rail
+ * tab.
+ *
+ * Reuses the fork endpoint with `host_type: "managed"`: "fork the chat and let
+ * the user continue it" is exactly a managed fork (its own server-provisioned
+ * runner, seeded with the source's history/repo). On a server without managed
+ * provisioning the fork endpoint returns an error, which is the intended
+ * graceful degradation — the caller surfaces it and no dead tab opens. Codex
+ * sessions do NOT use this: they fork in-process via their native `/side` path
+ * (prompt-cache-warm), so this is the generic (non-Codex) create.
+ *
+ * @param sourceId - The parent conversation to fork, e.g. "conv_abc123".
+ * @returns The new side-chat session id.
+ * @throws Error carrying the server's failure detail (e.g. no managed sandbox
+ *   configured) so the caller can surface it inline.
+ */
+export async function createSideChat(sourceId: string): Promise<{ childSessionId: string }> {
+  // `sandbox: {}` → managed fork inheriting the source's repo; the server picks
+  // the default provider. This is the "cheap drive" path.
+  const session = await forkSession(sourceId, { title: "Side chat", sandbox: {} });
+  return { childSessionId: session.id };
+}
+
+/**
  * Switch an existing session in place to a different agent/harness:
  * ``POST /v1/sessions/{id}/switch-agent``.
  *

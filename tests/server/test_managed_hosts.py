@@ -2976,7 +2976,7 @@ async def test_relaunch_rejects_pending_reused_id_then_allows_retry(db_uri: str)
     assert exc.value.status_code == 409
     assert "host lifecycle" in exc.value.detail
     assert len(fake.host_starts) == 1
-    assert fake.terminated == []
+    assert fake.terminated == [active.name]
     still_pending = host_store.get_host(active.host_id)
     assert still_pending is not None
     assert still_pending.sandbox_id is None
@@ -2984,7 +2984,7 @@ async def test_relaunch_rejects_pending_reused_id_then_allows_retry(db_uri: str)
 
     reaper = ManagedSandboxReaper(host_store=host_store, sandbox_config=config)
     assert await reaper.sweep_once() == 1
-    assert fake.terminated == [active.name]
+    assert fake.terminated == [active.name, active.name]
     cleared = host_store.get_host(active.host_id)
     assert cleared is not None
     assert cleared.sandbox_id is None

@@ -3889,8 +3889,7 @@ function ComposerImpl(
                         createSideChat(sourceId).then(
                           ({ childSessionId }) =>
                             useChatStore.setState({ sideChatToOpen: childSessionId }),
-                          () =>
-                            setCommandError("Couldn't start a side chat for this session."),
+                          () => setCommandError("Couldn't start a side chat for this session."),
                         );
                       }
                     : undefined

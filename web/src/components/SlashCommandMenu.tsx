@@ -223,58 +223,58 @@ export function SlashCommandMenu({
   return (
     <div className="absolute bottom-full left-0 z-10 mb-2 w-[28rem] max-w-[calc(100vw-24px)] overflow-hidden rounded-[16px] border border-border bg-popover p-2 shadow-menu">
       <div ref={listRef} className="max-h-80 overflow-y-auto">
-          {builtinRows.length > 0 && sectionHeader("Commands")}
-          {builtinRows.map((row) => (
-            <MenuRowButton
-              key={row.name}
-              row={row}
-              active={row.flatIndex === activeIndex}
-              onSelect={onSelect}
-            />
-          ))}
-          {(skillRows.length > 0 || skillsStatus != null) && sectionHeader("Skills")}
-          {skillsStatus === "loading" && (
-            <div
-              role="status"
-              className="flex items-center gap-2 px-1.5 py-1 text-ui text-muted-foreground"
-            >
-              <LoaderCircleIcon aria-hidden="true" className="size-3.5 shrink-0 animate-spin" />
-              Loading skills…
-            </div>
-          )}
-          {skillsStatus === "error" && (
-            <div role="status" className="px-1.5 py-1 text-ui text-muted-foreground">
-              Couldn’t load skills.{" "}
-              {onRetrySkills && (
-                <button
-                  type="button"
-                  className="underline hover:text-foreground"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={onRetrySkills}
-                >
-                  Retry
-                </button>
-              )}
-            </div>
-          )}
-          {skillsStatus === "unavailable" && (
-            <div role="status" className="px-1.5 py-1 text-ui text-muted-foreground">
-              {skillsUnavailableMessage}
-            </div>
-          )}
-          {skillsStatus === "ready" && skillRows.length === 0 && (
-            <div role="status" className="px-1.5 py-1 text-ui text-muted-foreground">
-              {query ? "No matching skills" : "No skills available"}
-            </div>
-          )}
-          {skillRows.map((row) => (
-            <MenuRowButton
-              key={row.name}
-              row={row}
-              active={row.flatIndex === activeIndex}
-              onSelect={onSelect}
-            />
-          ))}
+        {builtinRows.length > 0 && sectionHeader("Commands")}
+        {builtinRows.map((row) => (
+          <MenuRowButton
+            key={row.name}
+            row={row}
+            active={row.flatIndex === activeIndex}
+            onSelect={onSelect}
+          />
+        ))}
+        {(skillRows.length > 0 || skillsStatus != null) && sectionHeader("Skills")}
+        {skillsStatus === "loading" && (
+          <div
+            role="status"
+            className="flex items-center gap-2 px-1.5 py-1 text-ui text-muted-foreground"
+          >
+            <LoaderCircleIcon aria-hidden="true" className="size-3.5 shrink-0 animate-spin" />
+            Loading skills…
+          </div>
+        )}
+        {skillsStatus === "error" && (
+          <div role="status" className="px-1.5 py-1 text-ui text-muted-foreground">
+            Couldn’t load skills.{" "}
+            {onRetrySkills && (
+              <button
+                type="button"
+                className="underline hover:text-foreground"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={onRetrySkills}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+        {skillsStatus === "unavailable" && (
+          <div role="status" className="px-1.5 py-1 text-ui text-muted-foreground">
+            {skillsUnavailableMessage}
+          </div>
+        )}
+        {skillsStatus === "ready" && skillRows.length === 0 && (
+          <div role="status" className="px-1.5 py-1 text-ui text-muted-foreground">
+            {query ? "No matching skills" : "No skills available"}
+          </div>
+        )}
+        {skillRows.map((row) => (
+          <MenuRowButton
+            key={row.name}
+            row={row}
+            active={row.flatIndex === activeIndex}
+            onSelect={onSelect}
+          />
+        ))}
       </div>
     </div>
   );

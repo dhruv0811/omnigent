@@ -163,10 +163,7 @@ export function ComposerAddMenu({
                 <div className="px-2 py-1 text-xs leading-4 text-muted-foreground">Session</div>
                 <div className="flex flex-col gap-px">
                   {onSideChat && (
-                    <DropdownMenuItem
-                      data-testid="composer-side-chat-action"
-                      onSelect={onSideChat}
-                    >
+                    <DropdownMenuItem data-testid="composer-side-chat-action" onSelect={onSideChat}>
                       <span className="flex size-4 shrink-0 items-center justify-center">
                         <MessagesSquareIcon className="size-3.5" />
                       </span>

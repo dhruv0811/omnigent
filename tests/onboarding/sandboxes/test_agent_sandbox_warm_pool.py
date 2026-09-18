@@ -499,6 +499,37 @@ def test_missing_suspended_pod_does_not_destroy_allocation(harness: _Harness) ->
     harness.custom.delete_namespaced_custom_object.assert_not_called()
 
 
+def test_resume_tolerates_pod_removed_between_read_and_delete(harness: _Harness) -> None:
+    harness.core.delete_namespaced_pod.side_effect = _ApiError(404)
+
+    harness.launcher.resume(_HANDLE.encode())
+
+    harness.core.read_namespaced_pod.assert_called_once()
+    harness.core.delete_namespaced_pod.assert_called_once()
+    deletion = harness.core.delete_namespaced_pod.call_args
+    assert deletion.args == (harness.pod.metadata.name, _NAMESPACE)
+    assert deletion.kwargs["body"].preconditions.uid == _POD_UID
+    harness.custom.delete_namespaced_custom_object.assert_not_called()
+    harness.custom.patch_namespaced_custom_object.assert_not_called()
+    harness.closed.assert_called_once()
+
+
+@pytest.mark.parametrize("status", [403, 409])
+def test_resume_propagates_pod_delete_failures(harness: _Harness, status: int) -> None:
+    failure = _ApiError(status)
+    harness.core.delete_namespaced_pod.side_effect = failure
+
+    with pytest.raises(_ApiError) as raised:
+        harness.launcher.resume(_HANDLE.encode())
+
+    assert raised.value is failure
+    deletion = harness.core.delete_namespaced_pod.call_args
+    assert deletion.kwargs["body"].preconditions.uid == _POD_UID
+    harness.custom.delete_namespaced_custom_object.assert_not_called()
+    harness.custom.patch_namespaced_custom_object.assert_not_called()
+    harness.closed.assert_called_once()
+
+
 def test_missing_sandbox_surfaces_gone_instead_of_reallocation(harness: _Harness) -> None:
     harness.custom.get_namespaced_custom_object.side_effect = _ApiError(404)
     with pytest.raises(SandboxGoneError):

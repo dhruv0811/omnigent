@@ -656,15 +656,21 @@ class AgentSandboxWarmPoolLauncher(AgentSandboxLauncher):
             pod = self._pod(handle, sandbox)
             if pod is not None:
                 from kubernetes import client
+                from kubernetes.client.rest import ApiException
 
-                self._load_core().delete_namespaced_pod(
-                    pod.metadata.name,
-                    handle.namespace,
-                    body=client.V1DeleteOptions(
-                        preconditions=client.V1Preconditions(uid=pod.metadata.uid)
-                    ),
-                    _request_timeout=_POD_READY_REQUEST_TIMEOUT_S,
-                )
+                try:
+                    self._load_core().delete_namespaced_pod(
+                        pod.metadata.name,
+                        handle.namespace,
+                        body=client.V1DeleteOptions(
+                            preconditions=client.V1Preconditions(uid=pod.metadata.uid)
+                        ),
+                        _request_timeout=_POD_READY_REQUEST_TIMEOUT_S,
+                    )
+                except ApiException as exc:
+                    # Idle expiry may remove the Pod after the ownership check.
+                    if exc.status != 404:
+                        raise
             # Wake happens in start_host, after the server arms the fresh token.
         finally:
             self._close_clients()

@@ -177,6 +177,15 @@ export interface SendOptions {
    * to another chat. Defaults to the active conversation.
    */
   pinnedConversationId?: string;
+  /**
+   * Failure handler that OWNS the send's error UX. When set, `send` reports the
+   * failure here instead of its default surfacing (no error block appended, no
+   * `failedSendDraft` restored) — for callers like a codex `/side` whose failure
+   * belongs to their own surface (a toast + resetting the side-chat tab), not the
+   * parent transcript/composer. The optimistic bubble is still rolled back and
+   * status still settles.
+   */
+  onError?: (message: string) => void;
 }
 
 /**
@@ -2271,6 +2280,13 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
       queryClient?.invalidateQueries({ queryKey: ["conversations"] });
     } catch (err) {
       const { message, code } = describeSendFailure(err);
+      // A caller that owns its own failure UX (e.g. a codex `/side`, whose error
+      // belongs to the side-chat tab, not the parent chat) takes the message and
+      // suppresses the default surfacing below — no restored draft, no error
+      // block in the parent transcript. The bubble rollback + status settle still
+      // run so the parent isn't left mid-send.
+      const callerHandlesError = opts?.onError !== undefined;
+      opts?.onError?.(message);
       // Hand the failed message back to the composer so the user can retry it —
       // a failed send has no server-side record, so nothing else would restore
       // it. Keyed by the session it was meant for, so it lands in the right
@@ -2278,7 +2294,11 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
       // (`failedSendDraft` is conversation-scoped); the composer reads whichever
       // conversation is active and guards on the id before restoring.
       const draftSessionId = postedSessionId ?? submitConversationId;
-      if (draftSessionId !== null && (text.trim() !== "" || (files?.length ?? 0) > 0)) {
+      if (
+        !callerHandlesError &&
+        draftSessionId !== null &&
+        (text.trim() !== "" || (files?.length ?? 0) > 0)
+      ) {
         setterFor(draftSessionId)({
           failedSendDraft: {
             conversationId: draftSessionId,
@@ -2310,11 +2330,12 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
           // A response bubble already exists (the turn started, then failed)
           // — mark it failed so the error rides on that bubble.
           finalizeActive(failSet, "failed", message, null);
-        } else {
+        } else if (!callerHandlesError) {
           // No response bubble to carry the failure — the turn never started
           // (e.g. the runner never came online, so POST /events 503'd). Append
           // a standalone error block so the user sees WHY nothing happened
-          // instead of being left on a silent, empty composer.
+          // instead of being left on a silent, empty composer. Skipped when the
+          // caller owns the error UX (it surfaces the failure elsewhere).
           failSet((s) => ({ blocks: [...s.blocks, makeClientErrorBlock(message, code)] }));
         }
         failSet({
@@ -2329,8 +2350,10 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
         // with no trace — the failure mode that makes this class of bug so hard
         // to see. Surface it WITHOUT touching the turn lifecycle: finalizeActive
         // would fail a live response, and settling status would end a turn that
-        // is still running.
-        failSet((s) => ({ blocks: [...s.blocks, makeClientErrorBlock(message, code)] }));
+        // is still running. Skipped when the caller owns the error UX.
+        if (!callerHandlesError) {
+          failSet((s) => ({ blocks: [...s.blocks, makeClientErrorBlock(message, code)] }));
+        }
       }
     } finally {
       // Release the next queued send regardless of success/failure so one

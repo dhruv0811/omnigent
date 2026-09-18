@@ -2172,6 +2172,9 @@ def register_events_routes(
             # Read only for the gateway-backing check that decides which router
             # serves this turn; absent, routing keeps its default posture.
             host_store=getattr(request.app.state, "host_store", None),
+            # Read only to refuse a codex `/side` when the host is too old to fork
+            # one; absent, the dispatch forwards as before.
+            host_registry=getattr(request.app.state, "host_registry", None),
         )
         if pending_background_title is not None:
             pending_background_title.schedule(expected_seed_title=conv.title)

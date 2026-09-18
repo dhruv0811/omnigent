@@ -6095,6 +6095,7 @@ async def _dispatch_session_event_to_runner_impl(
     runner_router: RunnerRouter | None = None,
     native_terminal_ready: bool = False,
     host_store: HostStore | None = None,
+    host_registry: HostRegistry | None = None,
     background_titles_enabled: bool = True,
 ) -> _SessionEventDispatchResult:
     """
@@ -6231,6 +6232,20 @@ async def _dispatch_session_event_to_runner_impl(
         opens_side_chat = _native_pane_harness(conv) == "codex-native" and is_side_chat_command(
             _extract_user_text_for_routing(body)
         )
+        # An older host forwards `/side` to Codex as a plain prompt (no fork), so
+        # the web side chat opens and hangs and the question lands on the main
+        # thread. Refuse here — before the forward — with a clear reason instead.
+        if (
+            opens_side_chat
+            and conv.host_id is not None
+            and host_registry is not None
+            and not host_registry.host_supports_codex_side_chat(conv.host_id)
+        ):
+            raise OmnigentError(
+                "This session's host is too old to open a Codex side chat. Update "
+                "omnigent on the host (>= 0.15.0) and reconnect it, then try again.",
+                code=ErrorCode.INVALID_INPUT,
+            )
         pending_id: str | None = (
             pending_inputs.record(
                 session_id,

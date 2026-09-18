@@ -367,14 +367,30 @@ def test_termination_forwards_to_preparation_and_allows_restart(
 @pytest.mark.parametrize("mode", ["prepare", "host"])
 def test_idle_containers_terminate_promptly(
     activation_dir: Path,
+    tmp_path: Path,
     mode: str,
     processes: Callable[..., subprocess.Popen[str]],
 ) -> None:
-    worker = processes(mode)
     if mode == "prepare":
+        worker = processes(mode)
         _wait_for(bootstrap.ready)
     else:
-        time.sleep(0.3)
+        started = tmp_path / "host-started"
+        code = (
+            "from contextlib import contextmanager\n"
+            "from pathlib import Path\n"
+            "from omnigent.host import warm_bootstrap as bootstrap\n"
+            "original_signals = bootstrap._signals\n"
+            "@contextmanager\n"
+            "def signals_with_ready_marker():\n"
+            "    with original_signals() as signals:\n"
+            f"        Path({str(started)!r}).touch()\n"
+            "        yield signals\n"
+            "bootstrap._signals = signals_with_ready_marker\n"
+            "raise SystemExit(bootstrap.host())\n"
+        )
+        worker = processes(mode, code=code)
+        _wait_for(started.exists)
     worker.terminate()
     worker.communicate(timeout=5)
     assert worker.returncode == 128 + signal.SIGTERM

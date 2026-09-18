@@ -112,6 +112,19 @@ def _contains(expected: Any, actual: Any, *, field: str = "") -> bool:
     if isinstance(expected, list):
         if not isinstance(actual, list):
             return False
+        if field == "tolerations":
+            if not all(isinstance(item, dict) for item in [*expected, *actual]):
+                return False
+            # Admission may append tolerations; declared entries must keep their semantics.
+            defaults = {
+                "key": "",
+                "operator": "Equal",
+                "value": "",
+                "effect": "",
+                "tolerationSeconds": None,
+            }
+            observed = [{**defaults, **item} for item in actual]
+            return all({**defaults, **item} in observed for item in expected)
         if expected and all(isinstance(item, dict) and "name" in item for item in expected):
             names = [item.get("name") for item in actual if isinstance(item, dict)]
             if len(names) != len(set(names)):

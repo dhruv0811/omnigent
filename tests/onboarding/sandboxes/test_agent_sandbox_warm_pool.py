@@ -675,6 +675,84 @@ def test_runtime_profile_accepts_its_own_persistent_home(
         launcher._validate_pod(pod, _HANDLE, agent_name=None)
 
 
+def _configure_tolerations(harness: _Harness, toleration: dict[str, Any]) -> None:
+    harness.launcher._tolerations = [toleration]
+    profile = harness.launcher.template_spec()
+    harness.template["spec"] = copy.deepcopy(profile)
+    harness.sandbox["spec"] = copy.deepcopy(profile)
+    harness.pod.raw = _pod(profile).raw
+    harness.pod.raw["spec"]["tolerations"].extend(
+        {
+            "key": f"node.kubernetes.io/{condition}",
+            "operator": "Exists",
+            "effect": "NoExecute",
+            "tolerationSeconds": 300,
+        }
+        for condition in ("not-ready", "unreachable")
+    )
+
+
+def test_warm_launch_accepts_admission_added_tolerations(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure_tolerations(
+        harness,
+        {"key": "dedicated", "operator": "Equal", "value": "omnigent", "effect": "NoSchedule"},
+    )
+    execute = _exec_states(harness, monkeypatch, "waiting", "prepared")
+    sandbox_id = harness.launcher.provision("managed-test")
+    assert harness.launcher.start_host(sandbox_id, **_START_ARGS) == "/home/omnigent/workspace"
+    assert len([call for call in execute.call_args_list if call.args[2] == "activate"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (None, None),
+        ("key", "different"),
+        ("operator", "Exists"),
+        ("value", "different"),
+        ("effect", "NoSchedule"),
+        ("tolerationSeconds", 300),
+    ],
+)
+def test_warm_launch_rejects_missing_or_changed_configured_toleration(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, field: str | None, value: Any
+) -> None:
+    _configure_tolerations(
+        harness,
+        {
+            "key": "dedicated",
+            "operator": "Equal",
+            "value": "omnigent",
+            "effect": "NoExecute",
+            "tolerationSeconds": 60,
+        },
+    )
+    tolerations = harness.pod.raw["spec"]["tolerations"]
+    if field is None:
+        tolerations.pop(0)
+    else:
+        tolerations[0][field] = value
+    execute = MagicMock()
+    monkeypatch.setattr(harness.launcher, "_exec", execute)
+    with pytest.raises(click.ClickException, match="Pod does not match"):
+        harness.launcher.start_host(_HANDLE.encode(), **_START_ARGS)
+    execute.assert_not_called()
+
+
+def test_toleration_matching_preserves_defaults_and_unbounded_eviction() -> None:
+    configured = {"key": "dedicated", "operator": "Exists", "effect": "NoExecute"}
+    assert warm._contains(
+        {"tolerations": [configured]}, {"tolerations": [{**configured, "value": ""}]}
+    )
+    assert not warm._contains(
+        {"tolerations": [configured]},
+        {"tolerations": [{**configured, "tolerationSeconds": 300}]},
+    )
+    assert not warm._contains({"command": ["host"]}, {"command": ["host", "extra"]})
+
+
 def test_profile_comparison_accepts_api_defaults_but_not_weaker_permissions() -> None:
     assert warm._contains({"readOnly": False, "value": ""}, {})
     assert not warm._contains({"readOnly": True}, {})

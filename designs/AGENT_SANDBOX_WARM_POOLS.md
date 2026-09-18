@@ -43,6 +43,15 @@ The manifest generator renders the template from this same configuration. The
 pool is static infrastructure: the application reads it, but does not create,
 resize, or update it.
 
+For deployments using the owner-bound GitHub and Databricks brokers, generate
+the pool with `--shared`. This explicitly permits different built-in agents,
+uploaded agents, and session harnesses to share spare inventory when their
+infrastructure settings match. The host image must support the requested
+harness. A shared template omits the `omnigent.ai/agent` label and carries the
+annotation `omnigent.ai/warm-pool-shared: "true"` in its Pod template. The marker
+is included in the profile fingerprint; a missing agent label by itself does
+not grant shared behavior to an existing pool.
+
 ## Allocation precedes host registration
 
 `prepare_for_launch()` receives the server-resolved agent classifier before
@@ -118,6 +127,12 @@ launch token, server URL, and server-rendered workspace preparation command.
 Repository descriptors and host configuration are incorporated in that command
 using the existing preparation renderer.
 
+The selected harness resolves its model and provider when it launches. Host
+startup still prepares gateway configuration for multiple supported harnesses
+in the background; it does not run inference for each one. Static credentials
+and owner-bound broker access remain scoped to the sandbox, not isolated by
+harness. Shared pool matching does not change those existing semantics.
+
 The provider invokes a fixed bundled helper through Kubernetes exec and sends
 one newline-terminated JSON payload on stdin. It does not put the launch token
 in the exec command, template, claim, label, annotation, or status output. The
@@ -152,8 +167,9 @@ not contain a managed-host identity or per-session launch token.
 | Situation | Behavior |
 | --- | --- |
 | Pooling disabled | Existing direct Sandbox provisioning and lifecycle. |
-| Template classifier differs from the session's trusted classifier | Direct Sandbox fallback. An unclassified generic pool can serve uploaded session-scoped agents. |
-| Same classifier, incompatible template/Sandbox/Pod profile | Fail explicitly and ask the operator to generate a new versioned pool. |
+| Explicitly shared template with compatible infrastructure | Pool allocation for any session harness or trusted agent classifier, including uploaded agents. |
+| Dedicated or legacy unclassified template differs from the session's trusted classifier | Direct Sandbox fallback. Without `--shared`, an empty classifier still requires an exact match. |
+| Selected shared or dedicated template/Sandbox/Pod has an incompatible infrastructure profile | Fail explicitly and ask the operator to generate a new versioned pool. |
 | Claim, Sandbox, or Pod ownership/UID changes | Reject the replacement rather than silently accepting a different workspace. |
 | Pod UID changes during activation | Fail the activation and let the session retry. |
 | Pool has no ready spare | Native allocation can create a cold member; readiness and activation still apply. |
@@ -164,30 +180,43 @@ controller owner, and the Pod to have the Sandbox as its controller owner.
 Legacy Pod-name annotations are respected. Cleanup uses UID preconditions, so
 reusing a resource name cannot delete a later allocation accidentally.
 
-The generator accepts `--agent-name` for a pool dedicated to a built-in agent.
-Admission-time credential injection must be compatible with that static
-classifier: relabeling an already-running Pod cannot rerun admission. Images,
-runtime classes, resources, mounts, and scheduling also belong in the template.
-Use versioned template/pool names for changes. Generated pools use the native
-`Recreate` update strategy for unused inventory.
+The generator accepts mutually exclusive `--shared` and `--agent-name NAME`
+options. The latter creates a pool dedicated to the exact built-in classifier
+and retains its admission-time behavior. Omitting both options preserves legacy
+unclassified matching; it does not enable shared allocation implicitly.
+
+Per-agent admission-time credential injection does not apply to an unlabeled
+shared pool. Operators that require it should use a dedicated `--agent-name`
+pool. Omnigent does not relabel allocated Pods: changing a label after creation
+cannot rerun admission and is not a way to change the allocation's identity.
+Images, runtime classes, resources, mounts, scheduling, and security settings
+still belong in every template and undergo the same infrastructure validation.
+Use versioned template/pool names when changing modes or profiles. Generated
+pools use the native `Recreate` update strategy for unused inventory.
 
 ### Initial-release constraint: no migration of allocated profiles
 
-An allocated Sandbox retains its original static profile. Changing the server's
-image, mounts, resources, or expected agent classifier can block a later wake of
-that session. In particular, switching an agent can remove its original built-in
+An allocated Sandbox retains its original static infrastructure profile.
+Changing the server's image, mounts, resources, scheduling, or security settings
+can block a later wake of that session. Shared allocations allow a different
+agent classifier or harness on wake when the infrastructure profile still
+matches; their template remains explicitly shared and has no per-agent label.
+
+Dedicated and legacy unclassified allocations continue to require an exact
+classifier match. Switching an agent can remove its original built-in
 classification while the retained Sandbox still has that classifier. Validation
-then fails and the Sandbox/PVC remain preserved. Credential and admission
-identity checks continue to apply on every activation.
+then fails and the Sandbox/PVC remain preserved. Shared mode does not weaken
+ownership, Pod identity, infrastructure, or credential checks on activation.
 
 Changing the global `warm_pool` setting only changes new allocation selection;
 it does not migrate existing claims, profiles, or workspaces. `Recreate` likewise
 affects only unused inventory. Use direct provisioning for new sessions that
-need dynamic infrastructure profiles or classifier changes across suspension.
-Disabling pooling does not convert already allocated warm Sandboxes into direct
-ones. This release does not rebuild assigned Pod templates to accommodate those
-changes: the native claim controller also reconciles their metadata from the
-referenced template.
+need dynamic infrastructure profiles. For classifier changes alone, select an
+explicitly shared pool for the initial allocation. Changing the configured pool
+does not convert an existing dedicated allocation to shared mode, and disabling
+pooling does not convert warm allocations into direct ones. This release does
+not rebuild assigned Pod templates to accommodate those changes: the native
+claim controller also reconciles their metadata from the referenced template.
 
 ## Credentials and durable lifecycle
 
@@ -197,6 +226,12 @@ owner and serves that owner's GitHub or Databricks credentials. Private cloning,
 Git/gh configuration, Databricks configuration, and provider refresh use their
 existing paths. Warm activation does not distribute provider refresh tokens or
 copy another user's credentials into a spare Pod.
+
+Shared mode changes which agent classifiers can consume the same infrastructure
+profile. It does not broaden GitHub or Databricks credential access: the broker
+still resolves credentials through the allocated host's owner. Host startup
+continues to initialize its harness configurations through the existing host
+path.
 
 Operator-provided static harness Secrets remain supported when configured in the
 template. Their `envFrom` values are captured when the Pod starts, so rotating

@@ -56,6 +56,7 @@ POOLS = "sandboxwarmpools"
 TEMPLATES = "sandboxtemplates"
 BOOTSTRAP_CONTAINER = "bootstrap"
 PROFILE_ANNOTATION = "omnigent.ai/warm-profile"
+SHARED_POOL_ANNOTATION = "omnigent.ai/warm-pool-shared"
 _ACTIVATION_PATH = "/run/omnigent-activation"
 _HANDLE_PREFIX = "wp1:"
 _POLL_S = 0.5
@@ -99,6 +100,19 @@ class WarmPoolHandle:
 
 def _bootstrap_command(mode: str) -> list[str]:
     return ["python3", "-m", "omnigent.host.warm_bootstrap", mode]
+
+
+def _shared_profile(spec: dict[str, Any]) -> bool:
+    metadata = spec["podTemplate"].get("metadata", {})
+    annotations = metadata.get("annotations", {})
+    if SHARED_POOL_ANNOTATION not in annotations:
+        return False
+    if annotations[SHARED_POOL_ANNOTATION] != "true" or _AGENT_LABEL in metadata.get("labels", {}):
+        raise click.ClickException(
+            "Invalid shared warm-pool profile: the shared marker must be 'true' "
+            "and the omnigent.ai/agent label must be absent."
+        )
+    return True
 
 
 def _contains(expected: Any, actual: Any, *, field: str = "") -> bool:
@@ -161,8 +175,11 @@ class AgentSandboxWarmPoolLauncher(AgentSandboxLauncher):
         *,
         agent_name: str | None = None,
         host_config: dict[str, object] | None = None,
+        shared: bool = False,
     ) -> dict[str, Any]:
         """Render the static pod profile from the same config as direct Sandboxes."""
+        if shared and agent_name is not None:
+            raise click.ClickException("A shared warm pool cannot have an agent classifier.")
         job = build_job_manifest(
             job_name="warm-template",
             namespace=self._resolve_namespace(),
@@ -231,8 +248,14 @@ class AgentSandboxWarmPoolLauncher(AgentSandboxLauncher):
             {"name": "activation", "emptyDir": {"medium": "Memory", "sizeLimit": "4Mi"}}
         )
         pod["dnsPolicy"] = "ClusterFirst"
+        annotations = {SHARED_POOL_ANNOTATION: "true"} if shared else {}
+        if shared:
+            spec["podTemplate"]["metadata"]["annotations"] = annotations
         digest = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
-        spec["podTemplate"]["metadata"]["annotations"] = {PROFILE_ANNOTATION: digest}
+        spec["podTemplate"]["metadata"]["annotations"] = {
+            **annotations,
+            PROFILE_ANNOTATION: digest,
+        }
         return spec
 
     def _get(self, group: str, plural: str, namespace: str, name: str) -> dict[str, Any]:
@@ -254,18 +277,35 @@ class AgentSandboxWarmPoolLauncher(AgentSandboxLauncher):
         *,
         agent_name: str | None,
         host_config: dict[str, object] | None = None,
+        shared: bool = False,
     ) -> None:
-        expected = self.template_spec(agent_name=agent_name, host_config=host_config)
-        if not _contains(expected, spec):
+        expected_agent = None if shared else agent_name
+        expected = self.template_spec(
+            agent_name=expected_agent, host_config=host_config, shared=shared
+        )
+        labels = spec["podTemplate"].get("metadata", {}).get("labels", {})
+        if (
+            _shared_profile(spec) != shared
+            or labels.get(_AGENT_LABEL) != expected_agent
+            or not _contains(expected, spec)
+        ):
             raise click.ClickException(
                 "Warm-pool template does not match sandbox.kubernetes/workspace configuration. "
                 "Generate a new versioned template and pool with this server configuration."
             )
 
-    def _validate_pod(self, pod: Any, handle: WarmPoolHandle, *, agent_name: str | None) -> None:
+    def _validate_pod(
+        self,
+        pod: Any,
+        handle: WarmPoolHandle,
+        *,
+        agent_name: str | None,
+        shared: bool = False,
+    ) -> None:
         from kubernetes import client
 
-        profile = self.template_spec(agent_name=agent_name)
+        expected_agent = None if shared else agent_name
+        profile = self.template_spec(agent_name=expected_agent, shared=shared)
         expected = profile["podTemplate"]
         for claim in profile.get("volumeClaimTemplates", []):
             name = claim["metadata"]["name"]
@@ -286,7 +326,12 @@ class AgentSandboxWarmPoolLauncher(AgentSandboxLauncher):
             for container in actual.get("spec", {}).get("containers", [])
             for env in container.get("env", [])
         )
-        if classifier != agent_name or has_identity or not _contains(expected, actual):
+        if (
+            _shared_profile({"podTemplate": actual}) != shared
+            or classifier != expected_agent
+            or has_identity
+            or not _contains(expected, actual)
+        ):
             raise click.ClickException(
                 "Warm Pod does not match its configured profile; create a new versioned pool."
             )
@@ -311,12 +356,13 @@ class AgentSandboxWarmPoolLauncher(AgentSandboxLauncher):
                 .get("labels", {})
                 .get(_AGENT_LABEL)
             )
-            if classifier != self._agent_name:
+            shared = _shared_profile(template["spec"])
+            if not shared and classifier != self._agent_name:
                 _logger.info(
                     "No warm profile for agent %r; using direct Sandbox launch", self._agent_name
                 )
                 return super().provision(name)
-            self._validate_profile(template["spec"], agent_name=self._agent_name)
+            self._validate_profile(template["spec"], agent_name=self._agent_name, shared=shared)
             claim = cast(
                 dict[str, Any],
                 self._load_custom().create_namespaced_custom_object(
@@ -363,7 +409,9 @@ class AgentSandboxWarmPoolLauncher(AgentSandboxLauncher):
                         namespace, claim_name, claim_uid, sandbox_name, sandbox["metadata"]["uid"]
                     )
                     self._verify_assignment(handle, claim, sandbox)
-                    self._validate_profile(sandbox["spec"], agent_name=self._agent_name)
+                    self._validate_profile(
+                        sandbox["spec"], agent_name=self._agent_name, shared=shared
+                    )
                     _logger.info(
                         "Allocated %s Sandbox %s from warm pool %s",
                         sandbox["metadata"]
@@ -582,7 +630,10 @@ class AgentSandboxWarmPoolLauncher(AgentSandboxLauncher):
             on_stage("starting")
         try:
             sandbox = self._allocation(handle)
-            self._validate_profile(sandbox["spec"], agent_name=agent_name, host_config=host_config)
+            shared = _shared_profile(sandbox["spec"])
+            self._validate_profile(
+                sandbox["spec"], agent_name=agent_name, host_config=host_config, shared=shared
+            )
             self._patch_deadline(handle, boot=True)
             # The registered host now owns cleanup. Remove the unactivated-claim TTL.
             self._load_custom().patch_namespaced_custom_object(
@@ -608,7 +659,7 @@ class AgentSandboxWarmPoolLauncher(AgentSandboxLauncher):
                     raise click.ClickException(
                         "Warm Sandbox Pod changed during activation; retry the session."
                     )
-                self._validate_pod(pod, handle, agent_name=agent_name)
+                self._validate_pod(pod, handle, agent_name=agent_name, shared=shared)
                 # Failed preparation makes readiness false; still read its error state.
                 containers = pod.status.container_statuses or []
                 if not any(
@@ -771,7 +822,11 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--replicas", type=int, default=1)
-    parser.add_argument("--agent-name")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--agent-name", help="Require this built-in agent's admission profile")
+    scope.add_argument(
+        "--shared", action="store_true", help="Share unlabeled Pods across agents and harnesses"
+    )
     args = parser.parse_args()
     raw = yaml.safe_load(args.config.read_text())
     deployment = parse_sandbox_config(raw.get("sandbox"))
@@ -792,7 +847,7 @@ def main() -> None:
         "kind": "SandboxTemplate",
         "metadata": metadata,
         "spec": {
-            **launcher.template_spec(agent_name=args.agent_name),
+            **launcher.template_spec(agent_name=args.agent_name, shared=args.shared),
             "networkPolicyManagement": "Unmanaged",
         },
     }

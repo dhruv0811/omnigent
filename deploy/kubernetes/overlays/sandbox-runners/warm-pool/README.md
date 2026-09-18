@@ -5,10 +5,12 @@ compatible Sandbox, delivers its managed-host identity to the waiting bootstrap,
 and starts repository preparation and the normal host. GitHub and Databricks
 credentials still come from the existing owner-bound broker and credential store.
 
-This is opt-in for `provider: agent_sandbox`. The existing direct Sandbox path
-continues to support deployments without a pool and requests whose trusted
-agent classifier differs from the pool's classifier. Other profile mismatches
-fail explicitly so an incompatible template cannot serve the session.
+This is opt-in for `provider: agent_sandbox`. An explicitly shared pool can serve
+different agents and harnesses that use the same infrastructure profile. The
+existing direct Sandbox path supports deployments without a pool and requests
+whose trusted agent classifier differs from a dedicated pool's classifier.
+Other profile mismatches fail explicitly so an incompatible template cannot
+serve the session.
 
 ## Configure a deployment
 
@@ -35,13 +37,15 @@ sandbox:
     image: your-registry/omnigent-host:your-version
 ```
 
-Generate the template and pool from that exact config. Use the same workspace
-volume environment settings for generation and for the server:
+Generate the template and pool from that exact config. `--shared` is recommended
+for deployments using the owner-bound credential brokers: built-in and uploaded
+agents can use the same spare inventory. Use the same workspace volume
+environment settings for generation and for the server:
 
 ```bash
 export OMNIGENT_AGENT_SANDBOX_WORKSPACE_SIZE=5Gi
 python -m omnigent.onboarding.sandboxes.agent_sandbox_warm_pool \
-  --config server-config.yaml --name omnigent-default-v1 --replicas 2 \
+  --config server-config.yaml --name omnigent-default-v1 --replicas 2 --shared \
   > warm-pool.yaml
 kubectl --context YOUR_CONTEXT apply -f warm-pool.yaml
 kubectl --context YOUR_CONTEXT apply -k deploy/kubernetes/overlays/sandbox-runners/warm-pool
@@ -50,7 +54,7 @@ kubectl --context YOUR_CONTEXT apply -k deploy/kubernetes/overlays/sandbox-runne
 Apply this additive RBAC overlay alongside the existing sandbox-runners
 deployment. It grants the server ServiceAccount claim create/get/patch/delete,
 template/pool get, and `pods/exec` create/get in `omnigent-sandboxes`. The
-application does not create or modify shared pools. Kubernetes RBAC cannot
+application does not create or modify operator-owned pools. Kubernetes RBAC cannot
 restrict exec to a particular command; enabling warm mode expands the server's
 permissions within the runner namespace. Direct mode does not need this overlay.
 
@@ -59,28 +63,50 @@ After registering the owner-bound host, Omnigent clears that claim deadline and
 uses the Sandbox inactivity deadline. The claim patch permission supports this
 handoff and prevents abandoned launches from retaining allocated resources.
 
-Pool profiles include the image, resources, mounts, scheduling and security
-settings, and agent classifier. For a pool dedicated to a built-in agent, pass
-`--agent-name` with its exact name when generating the template. A generic pool
-is unclassified and works with uploaded, session-scoped agents. Admission-time
-credential injection must already match the pool's profile at Pod creation.
-Use a new versioned pool name when changing profiles so old spare Pods do not
-silently continue serving the previous configuration.
+Pool profiles include the image, resources, mounts, scheduling, security
+settings, and allocation mode. Choose the mode when generating the template:
+
+| Generator option | Agent compatibility |
+| --- | --- |
+| `--shared` | Any session harness or trusted agent classifier, including uploaded agents, with the same infrastructure profile. |
+| `--agent-name NAME` | The exact built-in agent classifier; other classifiers use direct provisioning. |
+| Neither option | Legacy unclassified behavior: only an exact empty-classifier match uses the pool; built-in classifiers use direct provisioning. |
+
+`--shared` and `--agent-name` are mutually exclusive. A shared Pod template omits
+`omnigent.ai/agent` and carries the annotation
+`omnigent.ai/warm-pool-shared: "true"`; the shared marker is part of its profile
+fingerprint. An absent agent label alone does not make an existing pool shared.
+The host image must still support the requested harness. Use a new versioned
+pool name when changing modes or other profile settings so old spare Pods do
+not serve the previous profile.
+
+Per-agent admission-time credential injection does not apply to an unlabeled
+shared pool. Do not relabel allocated Pods to trigger it: admission already ran
+when the Pod was created. Use `--agent-name NAME` for deployments that rely on
+that agent-specific admission behavior. Shared mode changes pool compatibility;
+GitHub and Databricks credentials remain scoped to the managed host's owner by
+the existing broker.
 
 ### Initial-release constraint: allocated profiles stay fixed
 
-An allocated warm Sandbox retains its original static profile. Changing the
-server's image, mounts, resources, or expected agent classifier can prevent that
-existing session from waking. Switching an agent can also remove its built-in
-classification and trigger this mismatch on the next wake. The wake fails with
-a profile error and preserves the Sandbox/PVC; it does not change an existing
-admission identity to make the new session configuration fit.
+An allocated warm Sandbox retains its original static infrastructure profile.
+Changing the server's image, mounts, resources, scheduling, or security settings
+can prevent that existing session from waking. Shared allocations allow agent
+or harness changes across suspension when those infrastructure settings still
+match.
+
+Dedicated and legacy unclassified allocations also retain their exact agent
+classifier. Switching an agent can remove its built-in classification and
+prevent a later wake. A mismatch fails with a profile error and preserves the
+Sandbox/PVC; Omnigent does not relabel the retained allocation or change its
+admission identity to fit the new session configuration.
 
 Changing `sandbox.agent_sandbox.warm_pool` selects a pool for new allocations
 only. It does not migrate existing claims or their workspaces. The generator's
 `Recreate` strategy replaces unused pool inventory only. Use direct provisioning
-for new sessions that need infrastructure or classifier changes across wake;
-disabling pooling does not convert existing warm allocations into direct ones.
+for new sessions that need infrastructure changes across wake. For classifier
+changes alone, use an explicitly shared pool from the first allocation.
+Disabling pooling does not convert existing warm allocations into direct ones.
 
 The bootstrap and host are both regular containers, and each reserves the
 configured resources. Kubernetes sums their requests: `250m` CPU and `384Mi`
@@ -104,8 +130,8 @@ suspension. Allocated Sandboxes are not returned to the spare pool.
 
 The opt-in live E2E test exercises the configured provider and native controllers.
 Use a test server that accepts API requests without an authentication header,
-such as a single-user development server. Configure it with a generic,
-unclassified pool and wait for at least one ready spare. Its namespace and pool
+such as a single-user development server. Configure it with an explicitly shared
+pool and wait for at least one ready spare. Its namespace and pool
 must be isolated from other test launchers so the test can identify its claim.
 The host image must support the Claude SDK harness used by the test bundle.
 
@@ -144,9 +170,10 @@ services still authenticate after activation refresh. Check account separation
 with two authenticated users and verify that disconnecting a service stops new
 broker requests from authenticating through that connection.
 
-For a built-in agent, generate a pool with its matching `--agent-name`; otherwise
-classifier fallback can select direct provisioning. Confirm the claim and
-pre-request Pod UID for every timing measurement. A successful allocation alone
+For built-in agents, use `--shared` or a dedicated pool with the matching
+`--agent-name`; an unmarked unclassified pool selects direct provisioning for
+those agents. Confirm the claim and pre-request Pod UID for every timing
+measurement. A successful allocation alone
 does not distinguish a warm hit from upstream cold creation. Measure image
 preparation separately from workspace preparation, broker setup, host/runner
 registration, and the first model response.

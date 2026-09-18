@@ -10,12 +10,14 @@ import sys
 import time
 import types
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
 import click
 import pytest
+import yaml
 
 from omnigent.host.identity import HOST_ID_ENV_VAR, HOST_NAME_ENV_VAR, HOST_TOKEN_ENV_VAR
 from omnigent.onboarding.sandboxes import agent_sandbox_warm_pool as warm
@@ -225,6 +227,12 @@ def _exec_states(harness: _Harness, monkeypatch: pytest.MonkeyPatch, *stages: st
     return result
 
 
+def _set_profile(harness: _Harness, profile: dict[str, Any]) -> None:
+    harness.template["spec"] = copy.deepcopy(profile)
+    harness.sandbox["spec"] = copy.deepcopy(profile)
+    harness.pod.raw = _pod(profile).raw
+
+
 def test_template_is_unassigned_and_preserves_hardening() -> None:
     spec = _launcher().template_spec()
     pod = spec["podTemplate"]["spec"]
@@ -305,6 +313,217 @@ def test_template_profile_is_deterministic_and_changes_with_configuration() -> N
     annotation = baseline["podTemplate"]["metadata"]["annotations"][warm.PROFILE_ANNOTATION]
     changed = _launcher(image="host-image:new-version").template_spec()
     assert changed["podTemplate"]["metadata"]["annotations"][warm.PROFILE_ANNOTATION] != annotation
+
+
+def test_shared_template_is_unclassified_and_has_a_distinct_profile() -> None:
+    launcher = _launcher()
+    legacy = launcher.template_spec()["podTemplate"]["metadata"]
+    shared = launcher.template_spec(shared=True)
+    metadata = shared["podTemplate"]["metadata"]
+    assert warm.SHARED_POOL_ANNOTATION not in legacy["annotations"]
+    assert metadata["annotations"][warm.SHARED_POOL_ANNOTATION] == "true"
+    assert k8s._AGENT_LABEL not in metadata["labels"]
+    assert (
+        metadata["annotations"][warm.PROFILE_ANNOTATION]
+        != legacy["annotations"][warm.PROFILE_ANNOTATION]
+    )
+    assert shared == launcher.template_spec(shared=True)
+
+
+def test_pool_generator_emits_explicit_shared_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = tmp_path / "server.yaml"
+    config.write_text(
+        json.dumps(
+            {
+                "sandbox": {
+                    "provider": "agent_sandbox",
+                    "server_url": "https://omnigent.example",
+                    "kubernetes": {"image": "host-image:test", "namespace": _NAMESPACE},
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["warm-pool", "--config", str(config), "--name", "shared-v1", "--shared"],
+    )
+    warm.main()
+    template, pool = yaml.safe_load_all(capsys.readouterr().out)
+    assert template["kind"] == "SandboxTemplate"
+    metadata = template["spec"]["podTemplate"]["metadata"]
+    assert metadata["annotations"][warm.SHARED_POOL_ANNOTATION] == "true"
+    assert k8s._AGENT_LABEL not in metadata["labels"]
+    assert pool["spec"]["sandboxTemplateRef"] == {"name": template["metadata"]["name"]}
+
+
+def test_pool_generator_rejects_shared_agent_classifier(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "warm-pool",
+            "--config",
+            "unused.yaml",
+            "--name",
+            "invalid-v1",
+            "--shared",
+            "--agent-name",
+            "privileged-agent",
+        ],
+    )
+    with pytest.raises(SystemExit) as raised:
+        warm.main()
+    assert raised.value.code == 2
+    assert "not allowed with" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("agent_name", [None, "claude-native-ui", "codex-native-ui"])
+def test_shared_pool_claims_and_activates_for_different_agents(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, agent_name: str | None
+) -> None:
+    _set_profile(harness, harness.launcher.template_spec(shared=True))
+    harness.launcher.prepare_for_launch(agent_name=agent_name)
+    execute = _exec_states(harness, monkeypatch, "waiting", "prepared")
+    handle = harness.launcher.provision("managed-test")
+    assert handle == _HANDLE.encode()
+    repo = RepoWorkspace("https://github.com/example/private.git", None, "private")
+    assert (
+        harness.launcher.start_host(handle, **_START_ARGS, agent_name=agent_name, repos=[repo])
+        == "/home/omnigent/workspace/private"
+    )
+    payload = next(call.args[3] for call in execute.call_args_list if call.args[2] == "activate")
+    assert payload["host_id"] == _START_ARGS["host_id"]
+    assert payload["token"] == _TOKEN
+    assert "omnigent.git_credential_github" in payload["prepare_command"][-1]
+    assert _TOKEN not in json.dumps(payload["prepare_command"])
+    assert k8s._AGENT_LABEL not in harness.pod.raw["metadata"]["labels"]
+
+
+@pytest.mark.parametrize("agent_name", [None, "different-agent", "privileged-agent"])
+def test_classified_pool_still_requires_its_exact_agent(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, agent_name: str | None
+) -> None:
+    _set_profile(harness, harness.launcher.template_spec(agent_name="privileged-agent"))
+    harness.launcher.prepare_for_launch(agent_name=agent_name)
+    direct = MagicMock(return_value="direct-sandbox")
+    monkeypatch.setattr(AgentSandboxLauncher, "provision", direct)
+    if agent_name == "privileged-agent":
+        assert harness.launcher.provision("managed-test") == _HANDLE.encode()
+        execute = _exec_states(harness, monkeypatch, "waiting", "prepared")
+        harness.launcher.start_host(_HANDLE.encode(), **_START_ARGS, agent_name=agent_name)
+        assert any(call.args[2] == "activate" for call in execute.call_args_list)
+        direct.assert_not_called()
+    else:
+        assert harness.launcher.provision("managed-test") == "direct-sandbox"
+        harness.custom.create_namespaced_custom_object.assert_not_called()
+        direct.assert_called_once_with("managed-test")
+    assert harness.pod.raw["metadata"]["labels"][k8s._AGENT_LABEL] == "privileged-agent"
+
+
+@pytest.mark.parametrize("marker", ["false", "TRUE", ""])
+def test_unknown_shared_marker_is_rejected_before_claiming(harness: _Harness, marker: str) -> None:
+    metadata = harness.template["spec"]["podTemplate"]["metadata"]
+    metadata["annotations"][warm.SHARED_POOL_ANNOTATION] = marker
+    with pytest.raises(click.ClickException):
+        harness.launcher.provision("managed-test")
+    harness.custom.create_namespaced_custom_object.assert_not_called()
+
+
+@pytest.mark.parametrize("classifier", ["privileged-agent", ""])
+def test_shared_template_with_classifier_is_rejected_before_claiming(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, classifier: str
+) -> None:
+    _set_profile(harness, harness.launcher.template_spec(shared=True))
+    harness.template["spec"]["podTemplate"]["metadata"]["labels"][k8s._AGENT_LABEL] = classifier
+    direct = MagicMock()
+    monkeypatch.setattr(AgentSandboxLauncher, "provision", direct)
+    with pytest.raises(click.ClickException):
+        harness.launcher.provision("managed-test")
+    harness.custom.create_namespaced_custom_object.assert_not_called()
+    direct.assert_not_called()
+
+
+@pytest.mark.parametrize("pool_name", [None, "replacement-pool"])
+@pytest.mark.parametrize("agent_name", [None, "codex-native-ui"])
+def test_shared_allocation_wakes_with_new_agent_and_pool_configuration(
+    harness: _Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    pool_name: str | None,
+    agent_name: str | None,
+) -> None:
+    _set_profile(harness, harness.launcher.template_spec(shared=True))
+    harness.launcher.prepare_for_launch(agent_name="claude-native-ui")
+    assert harness.launcher.provision("managed-test") == _HANDLE.encode()
+    harness.custom.reset_mock()
+    del harness.resources[warm.POOLS]
+    del harness.resources[warm.TEMPLATES]
+    harness.launcher = _launcher(warm_pool=pool_name)
+    monkeypatch.setattr(harness.launcher, "_load_custom", lambda: harness.custom)
+    monkeypatch.setattr(harness.launcher, "_load_core", lambda: harness.core)
+    monkeypatch.setattr(harness.launcher, "_close_clients", harness.closed)
+    harness.launcher.prepare_for_launch(agent_name=agent_name)
+    harness.launcher.resume(_HANDLE.encode())
+    harness.core.read_namespaced_pod.return_value = _pod(harness.sandbox["spec"], uid=_OTHER_UID)
+    execute = _exec_states(harness, monkeypatch, "waiting", "prepared")
+    assert (
+        harness.launcher.start_host(_HANDLE.encode(), **_START_ARGS, agent_name=agent_name)
+        == "/home/omnigent/workspace"
+    )
+    payload = next(call.args[3] for call in execute.call_args_list if call.args[2] == "activate")
+    assert payload["pod_uid"] == _OTHER_UID
+    assert payload["host_id"] == _START_ARGS["host_id"]
+    harness.custom.create_namespaced_custom_object.assert_not_called()
+    harness.custom.delete_namespaced_custom_object.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "change", ["classifier", "empty_classifier", "missing_marker", "unknown_marker", "fingerprint"]
+)
+def test_shared_pod_identity_changes_are_rejected_before_delivering_credentials(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    _set_profile(harness, harness.launcher.template_spec(shared=True))
+    metadata = harness.pod.raw["metadata"]
+    if change in {"classifier", "empty_classifier"}:
+        metadata["labels"][k8s._AGENT_LABEL] = "privileged-agent" if change == "classifier" else ""
+    elif change == "missing_marker":
+        del metadata["annotations"][warm.SHARED_POOL_ANNOTATION]
+    elif change == "unknown_marker":
+        metadata["annotations"][warm.SHARED_POOL_ANNOTATION] = "false"
+    else:
+        metadata["annotations"][warm.PROFILE_ANNOTATION] = "different-profile"
+    execute = MagicMock()
+    monkeypatch.setattr(harness.launcher, "_exec", execute)
+    with pytest.raises(click.ClickException):
+        harness.launcher.start_host(_HANDLE.encode(), **_START_ARGS, agent_name="claude-native-ui")
+    execute.assert_not_called()
+    harness.core.delete_namespaced_persistent_volume_claim.assert_not_called()
+
+
+@pytest.mark.parametrize("change", ["added_marker", "missing_marker", "unknown_marker"])
+def test_allocation_sharing_policy_cannot_change_without_its_profile(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    _set_profile(harness, harness.launcher.template_spec(shared=change != "added_marker"))
+    annotations = harness.sandbox["spec"]["podTemplate"]["metadata"]["annotations"]
+    if change == "added_marker":
+        annotations[warm.SHARED_POOL_ANNOTATION] = "true"
+    elif change == "missing_marker":
+        del annotations[warm.SHARED_POOL_ANNOTATION]
+    else:
+        annotations[warm.SHARED_POOL_ANNOTATION] = "false"
+    execute = MagicMock()
+    monkeypatch.setattr(harness.launcher, "_exec", execute)
+    with pytest.raises(click.ClickException):
+        harness.launcher.start_host(_HANDLE.encode(), **_START_ARGS)
+    execute.assert_not_called()
+    harness.custom.patch_namespaced_custom_object.assert_not_called()
+    harness.custom.delete_namespaced_custom_object.assert_not_called()
 
 
 def test_handle_round_trip_pins_namespace_and_both_resource_uids() -> None:

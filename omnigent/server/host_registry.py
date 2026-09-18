@@ -518,9 +518,7 @@ class HostRegistry:
             return None
         return conn.hello.installation_id
 
-    def host_supports_codex_side_chat(
-        self, host_id: str, workspace_id: int | None = None
-    ) -> bool:
+    def host_supports_codex_side_chat(self, host_id: str, workspace_id: int | None = None) -> bool:
         """Whether the connected host's build can fork a codex `/side` chat.
 
         Reads the capability the host advertised in its hello frame. An older

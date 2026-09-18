@@ -2280,6 +2280,14 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
       queryClient?.invalidateQueries({ queryKey: ["conversations"] });
     } catch (err) {
       const { message, code } = describeSendFailure(err);
+      // A codex `/side` that armed the side-chat latch (line ~2103) but then
+      // failed — e.g. the host is too old and the server refused — must disarm
+      // it, or the next sub-agent created under this parent would wrongly open
+      // as a side-chat tab. Clear only our own arm: a newer `/side` re-arm or a
+      // `session_created` that already consumed the latch must not be clobbered.
+      if (opensSideChat && get().awaitingSideChatFor === submitConversationId) {
+        useChatStore.setState({ awaitingSideChatFor: null });
+      }
       // A caller that owns its own failure UX (e.g. a codex `/side`, whose error
       // belongs to the side-chat tab, not the parent chat) takes the message and
       // suppresses the default surfacing below — no restored draft, no error

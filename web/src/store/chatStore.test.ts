@@ -6498,6 +6498,34 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
       expect(after.awaitingSideChatFor).toBe("conv_codex_side");
     });
 
+    it("disarms the latch when the /side send is refused", async () => {
+      // Old host: the server refuses `/side` (400). The latch armed at send
+      // time must clear, or the next ordinary sub-agent's session.created under
+      // this parent would wrongly open as a side-chat tab.
+      seedSession("conv_codex_side_fail", []);
+      await useChatStore.getState().switchTo("conv_codex_side_fail");
+      useChatStore.setState({ sessionHarness: "codex-native", awaitingSideChatFor: null });
+      fetchMock.mockImplementation((input, init) => {
+        const url = String(input);
+        if (url.endsWith("/v1/sessions/conv_codex_side_fail/events")) {
+          return mockResponse(
+            { error: { code: "invalid_input", message: "host too old for side chat" } },
+            { ok: false, status: 400 },
+          );
+        }
+        return defaultFetchHandler(input, init);
+      });
+
+      const seen: string[] = [];
+      await useChatStore
+        .getState()
+        .send("/side why", "agent_xyz", undefined, { onError: (m) => seen.push(m) });
+
+      expect(seen).toEqual(["host too old for side chat"]);
+      // Latch disarmed → a later ordinary child under this parent won't open a tab.
+      expect(useChatStore.getState().awaitingSideChatFor).toBeNull();
+    });
+
     it("still bubbles and latches for an ordinary message", async () => {
       seedSession("conv_codex_plain", []);
       await useChatStore.getState().switchTo("conv_codex_plain");

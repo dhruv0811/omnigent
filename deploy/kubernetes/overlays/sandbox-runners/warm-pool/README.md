@@ -100,164 +100,46 @@ remains with it through suspension. Inactivity deadlines belong on the Sandbox;
 claim lifecycle expiry deletes backing resources and must not be used for idle
 suspension. Allocated Sandboxes are not returned to the spare pool.
 
-## Local Colima demo
+## Verify a deployment
 
-The helper creates a separate kind cluster named `omnigent-warm-pool`, a
-dedicated kubeconfig, and local application state under
-`~/.omnigent-warm-pool-demo`. It uses port 8101, one spare Pod, and arm64 host
-images. It does not stop other servers, change your default Kubernetes context,
-or reuse credentials from existing labs. The new cluster shares Colima's CPU,
-memory, and disk with other clusters.
+The opt-in live E2E test exercises the configured provider and native controllers.
+Use a test server that accepts API requests without an authentication header,
+such as a single-user development server. Configure it with a generic,
+unclassified pool and wait for at least one ready spare. Its namespace and pool
+must be isolated from other test launchers so the test can identify its claim.
+The host image must support the Claude SDK harness used by the test bundle.
 
-Prerequisites: running Colima, Docker, kind, kubectl, and this checkout's Python
-environment with the `kubernetes` extra. Start Colima if needed, then run from
-the repository root:
-
-```bash
-colima start --cpu 4 --memory 6 --disk 40
-uv sync --extra kubernetes --group dev
-python3 scripts/agent-sandbox-warm-pool-demo.py prepare
-python3 scripts/agent-sandbox-warm-pool-demo.py start
-python3 scripts/agent-sandbox-warm-pool-demo.py verify
-python3 scripts/agent-sandbox-warm-pool-demo.py status
-```
-
-`prepare` builds this checkout's host image, loads it into kind using a
-single-platform image archive, installs the pinned upstream controller, and
-generates the matching pool. Image build/pull time occurs here, before measuring
-session startup. It can take several minutes. To retry preparation after a
-successful image build, add `--skip-build`.
-
-To use a host image you already built locally, select its explicit tag during
-the first preparation. This skips the build and loads that image into kind:
-
-```bash
-python3 scripts/agent-sandbox-warm-pool-demo.py prepare \
-  --skip-build --image omnigent-host:warm-pool-demo
-```
-
-`--image` requires an existing local image and `--skip-build`; the helper does
-not pull it or silently replace a previously prepared demo's image selection.
-
-The server binds to Mac loopback. Pods reach it through Colima's
-`host.docker.internal` gateway. The default is an API-only server. To include the
-web UI, pass an existing built bundle directory during the first preparation:
-
-```bash
-python3 scripts/agent-sandbox-warm-pool-demo.py prepare \
-  --web-ui-dist /absolute/path/to/omnigent/server/static/web-ui
-```
-
-`--python /absolute/path/to/.venv/bin/python` can reuse another checkout's
-environment. The helper always starts the server with this checkout as its
-working directory. `--directory` and `--port` select alternative local state and
-server ports; the cluster name is fixed to protect unrelated clusters, so run
-one instance at a time. Preparation options are saved in `demo.json`.
-
-`verify` uploads a session-scoped Claude SDK agent without an initial message.
-It needs no model credentials and checks:
-
-1. Pod UIDs are recorded **before** session creation in `pods-before.json`.
-2. The managed host and runner register online through the normal tunnel.
-3. A new claim identifies the allocated Sandbox and its actual Pod.
-4. That Pod's UID matches one recorded before the request.
-5. The host can write and read `/home/omnigent/workspace/WARM-POOL-MARKER`.
-6. The pool replenishes to one spare member.
-
-`verification.json` records the session, host, claim, Sandbox, Pod UID, and
-elapsed time until host and runner registration. It measures warm infrastructure
-activation, not time to a model response. The helper leaves the session and
-workspace available for inspection. Default kind networking does not enforce
-NetworkPolicy, so this demo does not establish production network isolation.
-
-The same request-to-host journey is available as an opt-in live E2E test. Prepare
-and start the demo first, then run:
+Set the server address and Kubernetes connection explicitly:
 
 ```bash
 OMNIGENT_WARM_POOL_E2E=1 \
-  OMNIGENT_WARM_POOL_DEMO_DIR="$HOME/.omnigent-warm-pool-demo" \
+  OMNIGENT_WARM_POOL_SERVER_URL=http://127.0.0.1:8000 \
+  OMNIGENT_WARM_POOL_KUBECONFIG=/absolute/path/to/test-kubeconfig \
+  OMNIGENT_WARM_POOL_CONTEXT=YOUR_TEST_CONTEXT \
+  OMNIGENT_WARM_POOL_NAMESPACE=omnigent-sandboxes \
+  OMNIGENT_WARM_POOL_NAME=omnigent-default-v1 \
   .venv/bin/python -m pytest tests/e2e/test_agent_sandbox_warm_pool.py -v
 ```
 
-This test calls the real configured provider and native controllers; it does not
-mock Kubernetes or require an LLM key. It deletes its session after checking the
-allocated Pod and workspace. Without the explicit opt-in flag it skips.
+The test records Pod UIDs before creating an empty managed session. It verifies
+that the allocated Pod already existed, waits for host and runner registration,
+writes and reads a workspace marker, and checks that spare capacity replenishes.
+It deletes its session afterward. No model request or connected-account
+credentials are required; without the explicit opt-in flag, the test skips.
 
-Inspect the results with the dedicated kubeconfig:
+Validate credential and lifecycle behavior separately in an authenticated test
+deployment. Connect test GitHub and Databricks accounts, create a pooled session
+with a private repository, and check `git fetch`, `gh api user --jq .login`, and
+`databricks current-user me`. Keep static provider credential Secrets out of the
+pool during broker validation so they cannot hide a failed connection lookup.
+Verify that the same workspace survives suspension and wake, and that both
+services still authenticate after activation refresh. Check account separation
+with two authenticated users and verify that disconnecting a service stops new
+broker requests from authenticating through that connection.
 
-```bash
-kubectl --context kind-omnigent-warm-pool \
-  --kubeconfig "$HOME/.omnigent-warm-pool-demo/kubeconfig" \
-  -n omnigent-warm-demo get sandboxclaim,sandbox,pod,pvc
-cat "$HOME/.omnigent-warm-pool-demo/verification.json"
-```
-
-To check durable wake without model credentials, leave the verified session
-untouched and run:
-
-```bash
-python3 scripts/agent-sandbox-warm-pool-demo.py verify-wake
-```
-
-This command validates the saved allocation UIDs, expires only that Sandbox with
-`Retain`, and waits for its Pod and host/runner connections to disappear. It then
-uses the public `retry_session` control event to invoke the real managed resume
-path without submitting a prompt. The same host, Sandbox UID, and HOME PVC UID
-must return with a new Pod UID and the original workspace marker. Results go to
-`wake-verification.json`.
-
-The check requires the empty, idle session created by `verify`; it refuses a
-session with conversation items so it cannot recover an old prompt. Run `verify`
-again before repeating `verify-wake`, or after the E2E test deleted its session.
-Normal UI sessions also resume when a new message arrives, after model access
-has been configured.
-
-## Check Connected Accounts
-
-Configure the existing credential store and GitHub/Databricks connection
-providers for the isolated server. The helper intentionally does not inherit
-provider credentials from the invoking agent session. Server-only environment
-settings can be supplied as a JSON object in
-`~/.omnigent-warm-pool-demo/server-env.json`; keep that file private and outside
-the repository. Configuration, launch tokens, and provider tokens should never
-be copied into screenshots or terminal output. Restart the demo server after
-changing its environment.
-
-Use OAuth redirect URLs matching this demo's address and port. If an existing
-OAuth app only allows another lab's port, register a separate redirect before
-testing; the helper leaves that existing server running.
-
-With the UI available at `http://127.0.0.1:8101`:
-
-1. Connect a test GitHub account and a test Databricks workspace in Connected
-   Accounts. Keep the pool free of static provider credential Secrets, so they
-   cannot mask broker failures.
-2. Create a pooled session with a private test repository, then use its terminal
-   to run `git fetch` and `gh api user --jq .login`. Confirm the expected owner.
-   Repeat with two repository workspaces to check clone preparation.
-3. Run `databricks current-user me` in the allocated host, then a small model
-   request and a read-only Databricks MCP request through your chosen harness.
-   Confirm that the account/workspace matches the connected owner.
-4. Suspend and wake the same session. Verify the workspace marker and repository
-   files survive, and both services still authenticate after activation refresh.
-5. Disconnect one service and check that subsequent broker requests stop
-   authenticating through that connection. Delete the session and verify its
-   claim, Sandbox, Pod, and owned PVC are removed while the pool stays stocked.
-
-For built-in agents selected in the UI, generate a pool with the matching
-`--agent-name`; otherwise profile mismatch can select direct provisioning and
-invalidate a claimed warm-hit result. Check the claim and pre-request Pod UID
-for every timing measurement. Two-user account separation requires a deployment
-with real user authentication; this single-user loopback demo cannot establish
-that property.
-
-Stop the local server or remove only the demo cluster:
-
-```bash
-python3 scripts/agent-sandbox-warm-pool-demo.py stop
-python3 scripts/agent-sandbox-warm-pool-demo.py cleanup
-```
-
-Cleanup preserves config, logs, and verification evidence in the demo directory,
-and leaves the built Docker image cached. Deleting the demo cluster permanently
-deletes its workspaces.
+For a built-in agent, generate a pool with its matching `--agent-name`; otherwise
+classifier fallback can select direct provisioning. Confirm the claim and
+pre-request Pod UID for every timing measurement. A successful allocation alone
+does not distinguish a warm hit from upstream cold creation. Measure image
+preparation separately from workspace preparation, broker setup, host/runner
+registration, and the first model response.

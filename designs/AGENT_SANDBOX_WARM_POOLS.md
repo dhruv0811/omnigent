@@ -9,7 +9,7 @@ remain the existing implementations.
 Implementation baseline: `main` at `04c6c171c`. The upstream API contract targets
 agent-sandbox **v1.0.0**, with `extensions.agents.x-k8s.io/v1beta1` templates,
 pools, and claims. This document describes the implementation; deployment and
-local verification commands are in the
+verification commands are in the
 [warm-pool runbook](../deploy/kubernetes/overlays/sandbox-runners/warm-pool/README.md).
 
 ## Resources and ownership
@@ -244,28 +244,24 @@ silently apply upstream's default private-range egress restrictions.
 The manifest generator has been exercised with the exact `python -m` command,
 and its Template/Pool output validates against upstream v1.0.0 CRD schemas.
 Automated coverage includes configuration, bootstrap state/identity behavior,
-and provider lifecycle. An opt-in live E2E test and isolated local demo helper
-exercise the complete managed-session request path without requiring inference.
+and provider lifecycle. An opt-in live E2E test exercises the complete
+managed-session request path against a configured test deployment without
+requiring inference.
 
 The live check records Pod UIDs **before** requesting a session, verifies that
 the claimed host uses one of them, waits for host/runner registration, writes
 and reads a workspace marker, and waits for spare capacity to replenish. The
 [runbook](../deploy/kubernetes/overlays/sandbox-runners/warm-pool/README.md)
-also covers Connected Accounts, private multi-repository cloning, Databricks,
-durable wake, and teardown checks.
+also describes credential and durable-workspace checks. The allocation test
+does not need connected-account credentials; broker and owner-isolation checks
+require separately configured test accounts and user authentication.
 
-The helper's optional `verify-wake` command expires only the pinned, verified
-Sandbox and invokes the public `retry_session` control event. It checks that
-the host, Sandbox, and HOME PVC persist while the Pod UID changes and the marker
-survives. The demo session must still be empty and idle, so this check does not
-submit a model prompt or recover previous conversation input.
-
-No live startup timings have been collected yet. A warm hit should move image
+A warm hit should move image
 pulling, scheduling, container startup, and initial PVC provisioning before the
 request. Repository preparation, broker setup, host registration, runner launch,
 and model startup remain on the request path. Measure those separately before
-choosing pool size or promising latency. The local kind demo does not validate
-NetworkPolicy enforcement or two-user account isolation.
+choosing pool size or promising latency. Validate NetworkPolicy enforcement in
+a test deployment with the intended production network controls enabled.
 
 ## Implementation map
 
@@ -275,5 +271,4 @@ NetworkPolicy enforcement or two-user account isolation.
 - [Shared Pod and workspace preparation](../omnigent/onboarding/sandboxes/kubernetes.py)
 - [Managed-host registration and recovery](../omnigent/server/managed_hosts.py)
 - [Existing credential broker](../omnigent/server/routes/host_credentials.py)
-- [Local demo helper](../scripts/agent-sandbox-warm-pool-demo.py)
 - [Opt-in live E2E test](../tests/e2e/test_agent_sandbox_warm_pool.py)

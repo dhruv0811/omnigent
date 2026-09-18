@@ -257,7 +257,7 @@ To prepare spare Pods before sessions arrive, enable
 [native warm pools](warm-pool/README.md). Warm mode keeps the same credential
 broker and durable Sandbox lifecycle, and adds claim allocation plus an
 explicit `pods/exec` grant for post-allocation activation. The linked guide
-includes template generation, capacity planning, and an isolated Colima demo.
+includes template generation, capacity planning, and opt-in deployment validation.
 
 ### Suspend and resume
 

@@ -98,7 +98,7 @@ class WarmPoolHandle:
 
 
 def _bootstrap_command(mode: str) -> list[str]:
-    return ["bash", "-lc", f"exec python3 -m omnigent.host.warm_bootstrap {mode}"]
+    return ["python3", "-m", "omnigent.host.warm_bootstrap", mode]
 
 
 def _contains(expected: Any, actual: Any, *, field: str = "") -> bool:

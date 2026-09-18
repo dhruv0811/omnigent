@@ -124,14 +124,21 @@ OMNIGENT_WARM_POOL_E2E=1 \
 The test records Pod UIDs before creating an empty managed session. It verifies
 that the allocated Pod already existed, waits for host and runner registration,
 writes and reads a workspace marker, and checks that spare capacity replenishes.
-It deletes its session afterward. No model request or connected-account
+It then adds slow shell initialization to the retained HOME, suspends the
+Sandbox, and wakes it through the session API. The host, claim, Sandbox, PVC,
+and workspace marker must survive while the Pod UID changes and readiness
+recovers. It deletes its session afterward. No model request or connected-account
 credentials are required; without the explicit opt-in flag, the test skips.
 
 Validate credential and lifecycle behavior separately in an authenticated test
 deployment. Connect test GitHub and Databricks accounts, create a pooled session
-with a private repository, and check `git fetch`, `gh api user --jq .login`, and
-`databricks current-user me`. Keep static provider credential Secrets out of the
-pool during broker validation so they cannot hide a failed connection lookup.
+with a private repository, and check `git fetch` and `gh api user --jq .login`.
+For Databricks, make a small gateway request through a command-based Codex,
+Claude, or Pi harness using the connected workspace. The host's token-free
+Databricks profile supports those broker-backed gateway commands; the standalone
+Databricks CLI and MCP resolver still need their own supported authentication.
+Keep static provider credential Secrets out of the pool during broker validation
+so they cannot hide a failed connection lookup.
 Verify that the same workspace survives suspension and wake, and that both
 services still authenticate after activation refresh. Check account separation
 with two authenticated users and verify that disconnecting a service stops new

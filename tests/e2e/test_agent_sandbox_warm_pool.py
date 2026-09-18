@@ -59,8 +59,8 @@ def _owned_by(resource: dict[str, Any], uid: str) -> bool:
     )
 
 
-def test_managed_session_adopts_ready_pod_and_registers_host() -> None:
-    """Claim an existing Pod, register the host/runner, write HOME, and replenish."""
+def test_managed_session_adopts_ready_pod_and_preserves_workspace_on_wake() -> None:
+    """Adopt a spare, then wake the same workspace despite slow shell startup."""
     server_url = _setting("SERVER_URL").rstrip("/")
     kubeconfig = Path(_setting("KUBECONFIG")).expanduser().resolve()
     assert kubeconfig.is_file(), "The explicit test kubeconfig must exist"
@@ -192,6 +192,18 @@ def test_managed_session_adopts_ready_pod_and_registers_host() -> None:
             pod_uid, pod_name = pod["metadata"]["uid"], pod["metadata"]["name"]
             assert pod_uid in before, "The session cold-started instead of claiming a ready Pod"
             assert before[pod_uid] == pod_name
+            bound_host_id = kubectl(
+                "exec",
+                pod_name,
+                "-c",
+                "host",
+                "--",
+                "python3",
+                "-c",
+                "from omnigent.host.warm_bootstrap import _load_activation, _state_dir; "
+                "print(_load_activation(_state_dir()).host_id)",
+            ).strip()
+            assert bound_host_id == session["host_id"], "The selected Pod belongs to another host"
 
             marker = f"/home/omnigent/workspace/WARM-POOL-E2E-{uuid.uuid4().hex}"
             content = "warm pool workspace is writable\n"
@@ -210,6 +222,99 @@ def test_managed_session_adopts_ready_pod_and_registers_host() -> None:
             assert kubectl("exec", pod_name, "-c", "host", "--", "cat", marker) == content
             replenished = wait_for_spares(previous=before)
             assert pod_uid not in replenished, "Allocated Pods must leave the spare pool"
+
+            home = next(volume for volume in pod["spec"]["volumes"] if volume["name"] == "home")
+            pvc_name = home["persistentVolumeClaim"]["claimName"]
+            pvc_uid = resource("pvc", pvc_name)["metadata"]["uid"]
+            host_id = session["host_id"]
+            sandbox_name = sandbox["metadata"]["name"]
+            sandbox_uid = sandbox["metadata"]["uid"]
+            kubectl(
+                "exec",
+                pod_name,
+                "-c",
+                "host",
+                "--",
+                "python3",
+                "-c",
+                "from pathlib import Path; p = Path.home() / '.bash_profile'; "
+                "p.write_text((p.read_text() if p.exists() else '') + '\\nsleep 2\\n')",
+            )
+            sandbox = resource("sandboxes.agents.x-k8s.io", sandbox_name)
+            assert sandbox["metadata"]["uid"] == sandbox_uid
+            kubectl(
+                "patch",
+                "sandboxes.agents.x-k8s.io",
+                sandbox_name,
+                "--type=merge",
+                "--patch",
+                json.dumps(
+                    {
+                        "metadata": {
+                            "uid": sandbox_uid,
+                            "resourceVersion": sandbox["metadata"]["resourceVersion"],
+                        },
+                        "spec": {
+                            "shutdownPolicy": "Retain",
+                            "shutdownTime": "2000-01-01T00:00:00Z",
+                        },
+                    }
+                ),
+            )
+            deadline = time.monotonic() + 180
+            while time.monotonic() < deadline:
+                response = client.get(session_path)
+                response.raise_for_status()
+                session = response.json()
+                if (
+                    not any(p["metadata"]["uid"] == pod_uid for p in resources("pods"))
+                    and not session.get("host_online")
+                    and not session.get("runner_online")
+                ):
+                    break
+                time.sleep(1)
+            else:
+                pytest.fail("The allocated Pod and its host/runner did not suspend")
+            assert resource("pvc", pvc_name)["metadata"]["uid"] == pvc_uid
+            response = client.post(
+                f"{session_path}/events",
+                json={"type": "retry_session", "data": {}},
+                timeout=420,
+            )
+            response.raise_for_status()
+            deadline = time.monotonic() + 420
+            while time.monotonic() < deadline:
+                response = client.get(session_path)
+                response.raise_for_status()
+                session = response.json()
+                assert (session.get("sandbox_status") or {}).get("stage") != "failed", (
+                    f"Managed wake failed for session {session_id}"
+                )
+                if session.get("host_online") and session.get("runner_online"):
+                    break
+                time.sleep(1)
+            else:
+                pytest.fail("Managed host/runner did not register after wake")
+            assert session["host_id"] == host_id
+            assert (
+                resource("sandboxclaim", claim["metadata"]["name"])["metadata"]["uid"]
+                == claim["metadata"]["uid"]
+            )
+            assert resource("sandbox", sandbox_name)["metadata"]["uid"] == sandbox_uid
+            assert resource("pvc", pvc_name)["metadata"]["uid"] == pvc_uid
+            resumed = [p for p in resources("pods") if _owned_by(p, sandbox_uid)]
+            assert len(resumed) == 1
+            assert resumed[0]["metadata"]["uid"] != pod_uid
+            assert any(
+                c.get("type") == "Ready" and c.get("status") == "True"
+                for c in resumed[0].get("status", {}).get("conditions", [])
+            ), "The retained shell profile must not affect readiness"
+            resumed_home = next(v for v in resumed[0]["spec"]["volumes"] if v["name"] == "home")
+            assert resumed_home["persistentVolumeClaim"]["claimName"] == pvc_name
+            assert (
+                kubectl("exec", resumed[0]["metadata"]["name"], "-c", "host", "--", "cat", marker)
+                == content
+            )
         finally:
             response = client.delete(session_path, timeout=30)
             response.raise_for_status()

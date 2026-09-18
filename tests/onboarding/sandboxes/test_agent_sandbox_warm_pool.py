@@ -240,7 +240,18 @@ def test_template_is_unassigned_and_preserves_hardening() -> None:
         assert env[warm.POD_UID_ENV_VAR]["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.uid"
         assert container["securityContext"]["allowPrivilegeEscalation"] is False
         assert container["securityContext"]["capabilities"] == {"drop": ["ALL"]}
-        assert container["readinessProbe"]["exec"]["command"][-1].endswith(" ready")
+        assert container["readinessProbe"]["exec"]["command"] == [
+            "python3",
+            "-m",
+            "omnigent.host.warm_bootstrap",
+            "ready",
+        ]
+        assert container["command"] == [
+            "python3",
+            "-m",
+            "omnigent.host.warm_bootstrap",
+            "prepare" if container["name"] == "bootstrap" else "host",
+        ]
     assert {item["name"] for item in pod["containers"]} == {"bootstrap", "host"}
     activation = next(item for item in pod["volumes"] if item["name"] == "activation")
     assert activation["emptyDir"]["medium"] == "Memory"

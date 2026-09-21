@@ -130,7 +130,7 @@ def test_devin_picker_offers_its_own_models_and_effort(
     seeded_session: tuple[str, str],
     initially_ready: bool,
 ) -> None:
-    """Readiness gates eager discovery; only the selected harness keeps polling.
+    """Only the selected, configured harness fetches and refreshes its catalog.
 
     :param seeded_session: ``(base_url, session_id)`` from the spawned server.
     """
@@ -231,29 +231,32 @@ async def _drive(base_url: str, session_id: str, *, initially_ready: bool) -> No
             await expect(page.get_by_test_id("new-chat-landing-agent-select")).to_have_attribute(
                 "aria-label", re.compile(r"^Claude Code,")
             )
-            if initially_ready:
-                await _wait_until(lambda: len(devin_requests) == 1)
-            await assert_devin_idle(int(initially_ready))
+            await assert_devin_idle(0)
 
             await page.get_by_test_id("new-chat-landing-agent-select").click()
             await page.get_by_test_id("new-chat-landing-harness-more").click()
             await expect(
                 page.get_by_test_id(f"new-chat-landing-agent-summary-{_DEVIN_AGENT_ID}")
-            ).to_have_text("SWE-2" if initially_ready else "swe-2")
-            if not initially_ready:
-                # The host-list refresh discovers setup completion without a reload.
-                readiness["devin-native"] = True
-                await page.clock.fast_forward(60_000)
-                await _wait_until(lambda: len(devin_requests) == 1)
-                await expect(
-                    page.get_by_test_id(f"new-chat-landing-agent-summary-{_DEVIN_AGENT_ID}")
-                ).to_have_text("SWE-2")
-            await assert_devin_idle(1)
+            ).to_have_text("swe-2")
+            await assert_devin_idle(0)
             await (
                 page.get_by_test_id(f"new-chat-landing-agent-config-{_DEVIN_AGENT_ID}")
                 .get_by_text("Edit", exact=True)
                 .click()
             )
+
+            if not initially_ready:
+                # Even an explicit selection must wait for setup before probing.
+                await expect(
+                    page.get_by_test_id("new-chat-landing-harness-warning")
+                ).to_be_visible()
+                async with page.expect_response("**/v1/hosts") as refreshed:
+                    await page.clock.fast_forward(60_000)
+                await (await refreshed.value).finished()
+                await page.wait_for_load_state("networkidle")
+                assert not devin_requests
+                readiness["devin-native"] = True
+                await page.clock.fast_forward(60_000)
 
             # Devin's own families render, from the devin-native catalog probe.
             models = page.get_by_test_id("new-chat-landing-agent-models")

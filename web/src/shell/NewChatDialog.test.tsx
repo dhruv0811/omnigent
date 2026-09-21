@@ -1772,7 +1772,7 @@ describe("NewChatLandingScreen initial picker loading", () => {
   it.each([
     { harness: "cursor-native", label: "Cursor" },
     { harness: "opencode-native", label: "OpenCode" },
-  ])("does not wait on unrelated model probes for $label", ({ harness, label }) => {
+  ])("does not request unrelated model catalogs for $label", ({ harness, label }) => {
     mockAgents([
       {
         id: "a_no_models",
@@ -1790,7 +1790,7 @@ describe("NewChatLandingScreen initial picker loading", () => {
     expect(useHostModelOptionsMock).toHaveBeenCalledWith(
       "host_1",
       "claude-native",
-      true,
+      false,
       expect.any(Object),
     );
   });
@@ -1917,6 +1917,19 @@ describe("NewChatLandingScreen cached picker preview", () => {
     expect(screen.getByTestId("new-chat-landing-input")).toBeEnabled();
     return picker;
   }
+
+  it("preserves a previously loaded catalog while another harness is selected", () => {
+    const snapshot = seedResolvedPicker();
+    const cachedModels = readNewChatPickerOptionsCache(snapshot.key)?.models.claude;
+    expect(cachedModels?.length).toBeGreaterThan(0);
+    renderLanding();
+    selectAgent("a2");
+
+    expect(
+      useHostModelOptionsMock.mock.calls.filter(([, h]) => h === "claude-native").at(-1),
+    ).toEqual(["host_1", "claude-native", false, { poll: false }]);
+    expect(readNewChatPickerOptionsCache(snapshot.key)?.models.claude).toEqual(cachedModels);
+  });
 
   describe.each(["pending", "offline", "unconfigured"])(
     "restored draft with a %s host",
@@ -2189,6 +2202,13 @@ describe("NewChatLandingScreen cached picker preview", () => {
   it.each([false, true])(
     "keeps cached Codex model, effort, and fresh bypass through validation (agent switched: %s)",
     async (switchAgent) => {
+      // Previously visited harnesses retain their React Query data while disabled.
+      useHostModelOptionsMock.mockImplementation(
+        (_hostId, harness) =>
+          (harness === "codex-native"
+            ? CODEX_MODEL_OPTIONS_RESULT
+            : CLAUDE_MODEL_OPTIONS_RESULT) as ReturnType<typeof useHostModelOptions>,
+      );
       localStorage.setItem(LAST_AGENT_KEY, switchAgent ? "a1" : "a2");
       localStorage.setItem(
         HARNESS_OPTIONS_KEY,
@@ -3999,7 +4019,7 @@ describe("NewChatLandingScreen", () => {
   const readyCatalogs = Object.fromEntries(catalogHarnesses.map((harness) => [harness, true]));
 
   it.each([undefined, readyCatalogs])(
-    "eagerly loads available catalogs and only polls the selected harness (readiness: %s)",
+    "loads and polls only the selected harness catalog (readiness: %s)",
     (configured_harnesses) => {
       mockAgents(catalogAgents);
       mockHosts([{ ...host("online"), configured_harnesses }]);
@@ -4012,7 +4032,7 @@ describe("NewChatLandingScreen", () => {
           expect(calls.at(-1)).toEqual([
             "host_1",
             harness,
-            true,
+            harness === agent.harness,
             { poll: harness === agent.harness },
           ]);
         }
@@ -4046,12 +4066,12 @@ describe("NewChatLandingScreen", () => {
       fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
         target: { value: "Ready" },
       });
-      expect(calls().at(-1)).toEqual(["host_1", harness, true, { poll }]);
+      expect(calls().at(-1)).toEqual(["host_1", harness, poll, { poll }]);
     },
   );
 
   it.each(["pending", "offline"])(
-    "waits for a %s restored host, then prefetches catalogs and polls the selected harness",
+    "waits for a %s restored host, then loads only the selected catalog",
     (state) => {
       mockAgents(catalogAgents);
       const first = renderLanding();
@@ -4078,7 +4098,7 @@ describe("NewChatLandingScreen", () => {
         expect(calls.at(-1)).toEqual([
           "host_1",
           harness,
-          true,
+          harness === "claude-native",
           { poll: harness === "claude-native" },
         ]);
       }
@@ -4183,6 +4203,7 @@ describe("NewChatLandingScreen", () => {
           JSON.stringify({ [agent.harness!]: { model: "saved-model" } }),
         );
         renderLanding();
+        selectUnconfiguredAgent(agent.id);
         fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
         if (!screen.queryByTestId(`new-chat-landing-agent-summary-${agent.id}`)) {
           fireEvent.click(screen.getByTestId("new-chat-landing-harness-more"));

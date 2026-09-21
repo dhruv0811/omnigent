@@ -3060,9 +3060,10 @@ export function NewChatLandingScreen() {
   // The selected native harness persists and restores harness-specific model,
   // effort, and permission knobs.
   const selectedNativeHarness = nativeCodingAgentForAvailableAgent(selectedAgent)?.harness ?? null;
-  // Wait for readiness before prefetching. Older hosts without readiness
+  // Probe only the selected, available harness. Older hosts without readiness
   // metadata remain eligible, matching the picker's setup warnings.
   const canLoadHostModels = (harness: string) =>
+    selectedNativeHarness === harness &&
     hostSelected &&
     selectedHost?.status === "online" &&
     !harnessUnconfiguredOnHost(harness, selectedHost);
@@ -3105,7 +3106,8 @@ export function NewChatLandingScreen() {
     cached?: NativeModelOption[],
   ) =>
     models ??
-    (loading ||
+    (selectedNativeHarness !== harness ||
+    loading ||
     hostReadinessPending ||
     harnessUnconfiguredOnHost(harness, selectedHost) ||
     selectedHostId === null

@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from websockets.datastructures import Headers
@@ -413,6 +413,112 @@ async def test_handle_model_options_uses_host_pi_configuration(
             }
         ],
     )
+
+
+@pytest.mark.parametrize("harness", ["devin-native", "native-devin", "devin"])
+async def test_handle_model_options_missing_devin_is_quiet(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    harness: str,
+) -> None:
+    """Repeated picker requests for an absent optional CLI must not flood host logs."""
+    from omnigent.harnesses.devin_native import main as devin_native
+
+    monkeypatch.setattr(devin_native, "resolve_cli_binary", lambda *_args, **_kwargs: None)
+    run = Mock(side_effect=AssertionError("a missing CLI must not spawn a subprocess"))
+    monkeypatch.setattr(devin_native, "subprocess", SimpleNamespace(run=run))
+    host = _make_host_process()
+
+    with caplog.at_level(logging.WARNING, logger="omnigent.host.connect"):
+        for i in range(3):
+            result = await host._handle_model_options(
+                HostModelOptionsFrame(request_id=f"missing_{i}", harness=harness),
+            )
+            assert result.status == "failed"
+            assert result.models == []
+            assert result.error is not None
+            assert "requires the 'devin' CLI" in result.error
+            assert "OMNIGENT_DEVIN_PATH" in result.error
+
+    run.assert_not_called()
+    assert not caplog.records
+
+
+async def test_handle_model_options_devin_recovers_after_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed preview must not hide a later install or configured executable."""
+    from omnigent.harnesses.devin_native import main as devin_native
+
+    resolve = Mock(return_value=None)
+    monkeypatch.setattr(devin_native, "resolve_cli_binary", resolve)
+    monkeypatch.setenv("OMNIGENT_DEVIN_PATH", "/custom/bin/devin")
+    host = _make_host_process()
+    host._configured_harnesses = {"devin-native": False}
+    first = await host._handle_model_options(
+        HostModelOptionsFrame(request_id="missing", harness="devin-native"),
+    )
+    assert first.status == "failed"
+
+    resolve.return_value = "/custom/bin/devin"
+    run = Mock(
+        return_value=SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "default_model": "test-family",
+                    "families": [{"slug": "test-family", "family_label": "Test Family"}],
+                }
+            )
+        )
+    )
+    monkeypatch.setattr(devin_native, "subprocess", SimpleNamespace(run=run))
+    result = await host._handle_model_options(
+        HostModelOptionsFrame(request_id="installed", harness="devin-native"),
+    )
+
+    assert result.status == "ok"
+    assert result.models == [
+        {
+            "id": "test-family",
+            "displayName": "Test Family",
+            "isDefault": True,
+            "source": {"kind": "subscription", "label": "Subscription", "name": "devin"},
+        }
+    ]
+    assert resolve.call_args.args == ("/custom/bin/devin",)
+    assert run.call_args.args[0] == ["/custom/bin/devin", "models", "list", "--format", "json"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.CalledProcessError(1, "devin"),
+        subprocess.TimeoutExpired("devin", 10),
+        ValueError("invalid model catalog"),
+    ],
+)
+async def test_handle_model_options_devin_probe_failure_still_warns(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: Exception,
+) -> None:
+    """Failures from an installed CLI remain diagnosable in the host log."""
+    from omnigent.harnesses.devin_native import main as devin_native
+
+    monkeypatch.setattr(devin_native, "list_devin_cli_model_options", Mock(side_effect=failure))
+    host = _make_host_process()
+    with caplog.at_level(logging.WARNING, logger="omnigent.host.connect"):
+        result = await host._handle_model_options(
+            HostModelOptionsFrame(request_id="failed", harness="devin-native"),
+        )
+
+    assert result.status == "failed"
+    assert result.models == []
+    assert result.error == "failed to resolve Devin model options"
+    record = next(r for r in caplog.records if r.message == "Devin model catalog unavailable")
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is not None
+    assert record.exc_info[1] is failure
 
 
 @pytest.mark.parametrize("failure", ["raises", "resolves_nothing"])

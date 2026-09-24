@@ -6701,6 +6701,33 @@ async def _codex_session_needs_runner_terminal(
     return True
 
 
+async def _is_codex_parent_thread_child(
+    server_client: httpx.AsyncClient | None,
+    session_id: str,
+    labels: Mapping[str, str] | None,
+) -> bool:
+    """
+    Whether a codex-native session is a thread inside its parent's app-server.
+
+    A ``/side`` fork or codex-spawned sub-agent is mirrored from the parent's
+    Codex, so launching a Codex of its own would start an unrelated conversation.
+    ``sys_session_send`` sub-agents lack the thread-id label and still launch.
+
+    :param server_client: The runner's Omnigent server HTTP client, or ``None``.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param labels: Server-supplied session labels, or ``None`` on the legacy
+        init path (then read from the session snapshot).
+    :returns: ``True`` when the session carries the codex thread-id label.
+    """
+    from omnigent.harnesses.codex_native.side_chat import CODEX_SUBAGENT_THREAD_ID_LABEL_KEY
+
+    if labels is None:
+        payload = await _session_payload_for_host_spawn_check(server_client, session_id)
+        raw = payload.get("labels") if payload is not None else None
+        labels = raw if isinstance(raw, dict) else {}
+    return bool(labels.get(CODEX_SUBAGENT_THREAD_ID_LABEL_KEY))
+
+
 def _codex_native_model_from_spec(agent_spec: AgentSpec | ResolvedSpec | None) -> str | None:
     """
     Read the Codex model default from a resolved agent spec.

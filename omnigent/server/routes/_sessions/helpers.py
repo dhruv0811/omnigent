@@ -161,6 +161,7 @@ from omnigent.server.routes._sessions.common import (  # noqa: F401
     _CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY,
     _CODEX_NATIVE_SUBAGENT_TOOL_CALL_ID_LABEL_KEY,
     _CODEX_NATIVE_SUBAGENT_WRAPPER_LABEL_VALUE,
+    _CODEX_SIDE_CHAT_GONE_LABEL_KEY,
     _CURSOR_FORK_HISTORY_HARNESSES,
     _CURSOR_NATIVE_HARNESS,
     _DENY_SENTINEL_PREFIX,
@@ -9870,12 +9871,15 @@ def _reject_server_reserved_label_seed(labels: dict[str, str] | None) -> None:
     # an arbitrary Codex thread on the parent's app-server (the parent's own main
     # thread, a sibling fork) and inject a turn into it — a turn-injection escape
     # of the per-conversation boundary. Reserve it so only server internals set it.
-    if _CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY in labels:
-        raise OmnigentError(
-            f"label {_CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY!r} is server-internal "
-            f"and cannot be set by clients",
-            code=ErrorCode.INVALID_INPUT,
-        )
+    for internal_key in (
+        _CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY,
+        _CODEX_SIDE_CHAT_GONE_LABEL_KEY,
+    ):
+        if internal_key in labels:
+            raise OmnigentError(
+                f"label {internal_key!r} is server-internal and cannot be set by clients",
+                code=ErrorCode.INVALID_INPUT,
+            )
 
 
 def _require_cost_control_label_authority(

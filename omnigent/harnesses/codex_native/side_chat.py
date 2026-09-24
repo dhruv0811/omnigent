@@ -60,6 +60,21 @@ SIDE_CHAT_DISPLAY_NAME = "Side chat"
 
 _SIDE_PREFIX = "/side "
 
+# Server-internal label naming the Codex thread a child session mirrors. Only
+# children registered from a thread in the parent's app-server (a ``/side`` fork
+# or a codex-spawned sub-agent) carry it; they never own a Codex process.
+CODEX_SUBAGENT_THREAD_ID_LABEL_KEY = "omnigent.codex_native.subagent_thread_id"
+
+# Server-internal label sealing a side chat whose fork is gone (read-only).
+SIDE_CHAT_GONE_LABEL_KEY = "omnigent.codex_native.side_chat_gone"
+
+# Runner ``/events`` error for a follow-up whose ephemeral fork no longer exists
+# (its app-server exited). The fork can never come back, so the server seals it.
+SIDE_CHAT_GONE_ERROR = "codex_side_chat_gone"
+
+# Codex's ``turn/start`` rejection for a thread its app-server does not hold.
+_THREAD_NOT_FOUND_FRAGMENT = "thread not found"
+
 # Pending ``/side`` questions, written by the executor and drained by the
 # forwarder. Whoever calls ``thread/fork`` owns the fork's event stream, and the
 # executor's app-server client closes as soon as it submits the turn — so the
@@ -188,6 +203,24 @@ async def submit_side_turn(
     turn = result.get("turn") if isinstance(result, dict) else None
     turn_id = turn.get("id") if isinstance(turn, dict) else None
     return turn_id if isinstance(turn_id, str) and turn_id else None
+
+
+def is_side_thread_gone_error(exc: BaseException) -> bool:
+    """
+    Whether a ``turn/start`` failure means the side-chat fork no longer exists.
+
+    An ephemeral fork has no rollout, so an app-server that does not hold it
+    (restarted, or never the one that forked it) can never load it again.
+
+    :param exc: Exception raised by :func:`submit_side_turn`.
+    :returns: ``True`` for Codex's ``thread not found`` rejection.
+    """
+    from omnigent.harnesses.codex_native.app_server import CodexAppServerResponseError
+
+    return (
+        isinstance(exc, CodexAppServerResponseError)
+        and _THREAD_NOT_FOUND_FRAGMENT in (exc.message or "").lower()
+    )
 
 
 async def open_side_chat_on_client(

@@ -38,6 +38,7 @@ from omnigent.harness_plugins import (
     PI_NATIVE_CODING_AGENT,
     harness_capabilities,
 )
+from omnigent.harnesses.codex_native import side_chat
 from omnigent.runner.routing import RunnerRouter
 from omnigent.server.host_registry import HostRegistry
 from omnigent.server.schemas import (
@@ -192,7 +193,10 @@ _EXTERNAL_CODEX_SUBAGENT_START_TYPE: str = "external_codex_subagent_start"
 _CODEX_NATIVE_SUBAGENT_WRAPPER_LABEL_VALUE = "codex-native-ui-subagent"
 
 
-_CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY = "omnigent.codex_native.subagent_thread_id"
+_CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY = side_chat.CODEX_SUBAGENT_THREAD_ID_LABEL_KEY
+
+
+_CODEX_SIDE_CHAT_GONE_LABEL_KEY = side_chat.SIDE_CHAT_GONE_LABEL_KEY
 
 
 _CODEX_NATIVE_SUBAGENT_PARENT_THREAD_ID_LABEL_KEY = "omnigent.codex_native.parent_thread_id"
@@ -1037,6 +1041,7 @@ __all__ = [
     "_CODEX_NATIVE_SUBAGENT_TOOL_CALL_ID_LABEL_KEY",
     "_CODEX_NATIVE_SUBAGENT_WRAPPER_LABEL_VALUE",
     "_CODEX_NATIVE_WRAPPER_LABEL_VALUE",
+    "_CODEX_SIDE_CHAT_GONE_LABEL_KEY",
     "_COMPACT_TYPE",
     "_CURSOR_FORK_HISTORY_HARNESSES",
     "_CURSOR_NATIVE_HARNESS",

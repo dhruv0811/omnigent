@@ -136,6 +136,7 @@ from omnigent.runner.native import (
     _ensure_native_terminal,
     _ensure_orchestrator_skills_in_bundle,
     _forward_harness_response,
+    _is_codex_parent_thread_child,
     _is_runner_owned_antigravity_terminal,
     _is_runner_owned_codex_terminal,
     _is_spec_local_native_python_tool,
@@ -4433,6 +4434,19 @@ def create_runner_app(
             elif harness_name == "codex-native":
 
                 async def _codex_pre_launch(has_terminal: bool) -> PreLaunchResult:
+                    if await _is_codex_parent_thread_child(
+                        server_client, session_id, init_context.labels
+                    ):
+                        # A /side fork or codex-spawned sub-agent is a thread in the
+                        # parent's app-server; its own Codex would start a fresh,
+                        # unrelated conversation under the child's name.
+                        _logger.info(
+                            "Skipping codex terminal auto-create for %s; it is a thread "
+                            "in its parent's Codex.",
+                            session_id,
+                            extra={"session_id": session_id},
+                        )
+                        return PreLaunchResult(skip=True)
                     needs = (
                         init_context.envelope is not None
                         or await _codex_session_needs_runner_terminal(server_client, session_id)
@@ -9839,20 +9853,27 @@ def create_runner_app(
             _side_state = await _codex_native_bridge_state_for_session(
                 conversation_id, action="side chat turn"
             )
+            # The fork lived only in the app-server that created it: with no
+            # parent bridge here, or Codex no longer holding the thread, it is gone.
+            _side_gone = JSONResponse(
+                status_code=410,
+                content={
+                    "error": side_chat.SIDE_CHAT_GONE_ERROR,
+                    "detail": "This side chat's Codex process has ended.",
+                },
+            )
             if _side_state is None:
-                return JSONResponse(
-                    status_code=503,
-                    content={
-                        "error": "codex_side_chat_no_bridge",
-                        "detail": "Codex /side follow-up requires a loaded parent Codex bridge.",
-                    },
-                )
+                return _side_gone
             _side_client = client_for_transport(
                 _side_state.socket_path, client_name="omnigent-codex-native-runner"
             )
             try:
                 await _side_client.connect()
                 await side_chat.submit_side_turn(_side_client, str(_side_thread_id), _side_text)
+            except Exception as exc:
+                if side_chat.is_side_thread_gone_error(exc):
+                    return _side_gone
+                raise
             finally:
                 await _side_client.close()
             return Response(status_code=202)

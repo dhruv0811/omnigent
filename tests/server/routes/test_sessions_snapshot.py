@@ -2908,6 +2908,20 @@ async def test_side_chat_fork_not_sealed_when_runner_matches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_side_chat_fork_sealed_when_runner_reported_it_gone() -> None:
+    """A token-bound runner keeps its id across a restart, so the divergence check
+    misses a lost fork. The persisted gone label seals it anyway."""
+    from omnigent.server.routes._sessions.orchestration import (
+        _codex_side_chat_fork_sealed,
+    )
+
+    child = _side_chat_child(runner_id="runner-birth")
+    child.labels["omnigent.codex_native.side_chat_gone"] = "1"
+    store = _ParentStore(SimpleNamespace(runner_id="runner-birth"))
+    assert await _codex_side_chat_fork_sealed(child, store) is True  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
 async def test_side_chat_fork_seal_only_applies_to_side_chats() -> None:
     """The seal is gated to the ``/side`` nickname. An ordinary codex sub-agent
     (durable, not an ephemeral fork) with a diverged runner must NOT be sealed —

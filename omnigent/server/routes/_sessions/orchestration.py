@@ -6230,6 +6230,7 @@ async def _forward_codex_side_chat_turn(
     conv: Conversation,
     body: SessionEventInput,
     runner_client: httpx.AsyncClient,
+    conversation_store: ConversationStore,
 ) -> _SessionEventDispatchResult | None:
     """
     Forward a Codex ``/side`` child's user turn to the PARENT runner.
@@ -6244,12 +6245,17 @@ async def _forward_codex_side_chat_turn(
     :param conv: The side-chat child conversation row.
     :param body: The user message event.
     :param runner_client: The child's runner client (== the parent's runner).
+    :param conversation_store: Store used to seal the child when its fork is gone.
     :returns: A no-persist dispatch result, or ``None`` to fall through when the
         child lacks a parent id or a Codex thread-id label.
+    :raises OmnigentError: ``CONFLICT`` when the fork no longer exists; the child
+        is sealed read-only first.
     """
     from omnigent.harnesses.claude_native.bridge import url_component
+    from omnigent.harnesses.codex_native.side_chat import SIDE_CHAT_GONE_ERROR
     from omnigent.server.routes._sessions.common import (
         _CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY,
+        _CODEX_SIDE_CHAT_GONE_LABEL_KEY,
     )
 
     parent_id = conv.parent_conversation_id
@@ -6264,8 +6270,28 @@ async def _forward_codex_side_chat_turn(
             "codex_side_thread_id": child_thread_id,
         },
     )
+    if resp.status_code == 410 and _response_error_code(resp) == SIDE_CHAT_GONE_ERROR:
+        # Persisted: an ephemeral fork never comes back, even on the same runner.
+        await asyncio.to_thread(
+            conversation_store.set_labels, conv.id, {_CODEX_SIDE_CHAT_GONE_LABEL_KEY: "1"}
+        )
+        raise OmnigentError(
+            "This side chat has ended because its Codex process is gone. "
+            "Start a new /side chat from the main session.",
+            code=ErrorCode.CONFLICT,
+        )
     resp.raise_for_status()
     return _SessionEventDispatchResult(item_id=None, pending_id=None)
+
+
+def _response_error_code(resp: httpx.Response) -> str | None:
+    """Return a runner JSON error body's ``error`` field, or ``None``."""
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    return error if isinstance(error, str) else None
 
 
 async def _dispatch_session_event_to_runner_impl(
@@ -6365,7 +6391,9 @@ async def _dispatch_session_event_to_runner_impl(
         # Codex /side follow-up: drive the child on its own Codex thread via the
         # parent's runner/bridge; do not persist AP-side (the forwarder mirrors
         # the child thread echo, staying the single writer).
-        side_result = await _forward_codex_side_chat_turn(conv, body, runner_client)
+        side_result = await _forward_codex_side_chat_turn(
+            conv, body, runner_client, conversation_store
+        )
         if side_result is not None:
             return side_result
     if body.type == "message" and _is_native_terminal_session(conv):
@@ -10531,15 +10559,19 @@ async def _codex_side_chat_fork_sealed(conv: Conversation, conv_store: Conversat
     """
     from omnigent.server.routes._sessions.common import (
         _CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY,
+        _CODEX_SIDE_CHAT_GONE_LABEL_KEY,
     )
 
+    labels = conv.labels or {}
     if (
         not _is_codex_native_subagent(conv)
-        or conv.parent_conversation_id is None
-        or not conv.runner_id
-        or (conv.labels or {}).get(_CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY)
-        != _SIDE_CHAT_NICKNAME
+        or labels.get(_CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY) != _SIDE_CHAT_NICKNAME
     ):
+        return False
+    if labels.get(_CODEX_SIDE_CHAT_GONE_LABEL_KEY):
+        # The runner reported the fork gone (a runner id can survive a restart).
+        return True
+    if conv.parent_conversation_id is None or not conv.runner_id:
         return False
     parent = await asyncio.to_thread(conv_store.get_conversation, conv.parent_conversation_id)
     return parent is not None and bool(parent.runner_id) and parent.runner_id != conv.runner_id

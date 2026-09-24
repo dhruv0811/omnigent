@@ -42,7 +42,8 @@ class _FakeResp:
         return self._payload
 
     def raise_for_status(self) -> None:
-        return None
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 class _FakeRunnerClient:
@@ -176,3 +177,25 @@ async def test_parent_thread_child_detection_reads_snapshot_on_legacy_init(
 
     monkeypatch.setattr(native_orch, "_session_payload_for_host_spawn_check", _payload)
     assert await native_orch._is_codex_parent_thread_child(None, "c", None) is True
+
+
+@pytest.mark.asyncio
+async def test_forward_side_chat_turn_keeps_chat_open_when_bridge_lookup_fails() -> None:
+    """A missing bridge can be a failed label lookup, not a gone fork: stay retryable."""
+    from omnigent.server.routes._sessions import orchestration as orch
+    from omnigent.server.routes._sessions.common import _CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY
+
+    conv = SimpleNamespace(
+        id="conv_side",
+        parent_conversation_id="conv_parent",
+        kind="sub_agent",
+        labels={_CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY: "thread_side"},
+    )
+    body = SimpleNamespace(data={"content": [{"type": "input_text", "text": "and why?"}]})
+    client = _FakeRunnerClient(_FakeResp(503, {"error": "codex_side_chat_no_bridge"}))
+    store = _LabelStore()
+
+    with pytest.raises(RuntimeError):
+        await orch._forward_codex_side_chat_turn(conv, body, client, store)
+
+    assert store.writes == []  # never sealed on an indeterminate lookup

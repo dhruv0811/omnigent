@@ -68,8 +68,8 @@ CODEX_SUBAGENT_THREAD_ID_LABEL_KEY = "omnigent.codex_native.subagent_thread_id"
 # Server-internal label sealing a side chat whose fork is gone (read-only).
 SIDE_CHAT_GONE_LABEL_KEY = "omnigent.codex_native.side_chat_gone"
 
-# Runner ``/events`` error for a follow-up whose ephemeral fork no longer exists
-# (its app-server exited). The fork can never come back, so the server seals it.
+# Runner ``/events`` error for a follow-up Codex confirmed has no thread (its fork's
+# app-server exited). The fork can never come back, so the server seals it.
 SIDE_CHAT_GONE_ERROR = "codex_side_chat_gone"
 
 # Codex's ``turn/start`` rejection for a thread its app-server does not hold.

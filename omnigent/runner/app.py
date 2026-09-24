@@ -9853,17 +9853,16 @@ def create_runner_app(
             _side_state = await _codex_native_bridge_state_for_session(
                 conversation_id, action="side chat turn"
             )
-            # The fork lived only in the app-server that created it: with no
-            # parent bridge here, or Codex no longer holding the thread, it is gone.
-            _side_gone = JSONResponse(
-                status_code=410,
-                content={
-                    "error": side_chat.SIDE_CHAT_GONE_ERROR,
-                    "detail": "This side chat's Codex process has ended.",
-                },
-            )
             if _side_state is None:
-                return _side_gone
+                # Not proof the fork is gone: a failed label lookup also lands here,
+                # so stay retryable rather than letting the server seal a live chat.
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "codex_side_chat_no_bridge",
+                        "detail": "Codex /side follow-up requires a loaded parent Codex bridge.",
+                    },
+                )
             _side_client = client_for_transport(
                 _side_state.socket_path, client_name="omnigent-codex-native-runner"
             )
@@ -9872,7 +9871,14 @@ def create_runner_app(
                 await side_chat.submit_side_turn(_side_client, str(_side_thread_id), _side_text)
             except Exception as exc:
                 if side_chat.is_side_thread_gone_error(exc):
-                    return _side_gone
+                    # Codex itself confirms the ephemeral fork is gone for good.
+                    return JSONResponse(
+                        status_code=410,
+                        content={
+                            "error": side_chat.SIDE_CHAT_GONE_ERROR,
+                            "detail": "This side chat's Codex process has ended.",
+                        },
+                    )
                 raise
             finally:
                 await _side_client.close()

@@ -23,6 +23,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from omnigent.errors import ErrorCode, OmnigentError
+from omnigent.server.admin_list import AdminList
 from omnigent.server.auth import AuthProvider, SharingMode
 from omnigent.server.routes._auth_helpers import get_user_id
 from omnigent.server.sharing_settings import (
@@ -80,8 +81,11 @@ async def _require_admin(
     request: Request,
     auth_provider: AuthProvider | None,
     permission_store: PermissionStore | None,
+    admin_list: AdminList | None = None,
 ) -> None:
-    """Verify the caller is an admin, mirroring the default-policies gate.
+    """Verify the caller is an admin: the DB flag or the admin-list file, the
+    same sources ``/v1/me`` reports, so a listed identity that never logged in
+    (header auth) is not shown the page and then refused.
 
     Single-user mode (no permission store) skips the check. Multi-user mode
     raises 401 if unauthenticated or 403 if the user is not an admin.
@@ -91,7 +95,9 @@ async def _require_admin(
     user_id = get_user_id(request, auth_provider)
     if user_id is None:
         raise OmnigentError("Authentication required", code=ErrorCode.UNAUTHORIZED)
-    is_admin = await asyncio.to_thread(permission_store.is_admin, user_id)
+    is_admin = (admin_list is not None and admin_list.is_admin(user_id)) or (
+        await asyncio.to_thread(permission_store.is_admin, user_id)
+    )
     if not is_admin:
         raise OmnigentError(
             "Admin privileges required to manage sharing settings",
@@ -102,6 +108,7 @@ async def _require_admin(
 def create_sharing_router(
     auth_provider: AuthProvider | None = None,
     permission_store: PermissionStore | None = None,
+    admin_list: AdminList | None = None,
 ) -> APIRouter:
     """Build the admin sharing router (mounted under ``/v1``)."""
     router = APIRouter()
@@ -109,7 +116,7 @@ def create_sharing_router(
     @router.get("/sharing")
     async def get_sharing(request: Request) -> dict[str, Any]:
         """Report every setting, whether each is editable here, and the options."""
-        await _require_admin(request, auth_provider, permission_store)
+        await _require_admin(request, auth_provider, permission_store, admin_list)
         return _state_response(request)
 
     @router.put("/sharing")
@@ -121,7 +128,7 @@ def create_sharing_router(
         setting a value should learn about a typo). Rejects a write to a setting
         the deployment manages itself (not file-backed) with 403.
         """
-        await _require_admin(request, auth_provider, permission_store)
+        await _require_admin(request, auth_provider, permission_store, admin_list)
         state = request.app.state
         if (
             body.sharing_mode is None

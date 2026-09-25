@@ -74,6 +74,7 @@ def _build_app(
     sharing_mode: SharingMode | None = None,
     public_sharing: bool | None = None,
     managed: bool = False,
+    admins: list[str] | None = None,
 ) -> tuple[FastAPI, SqlAlchemyPermissionStore]:
     """Real multi-user ``create_app`` on SQLite with an admin and a user."""
     permission_store = SqlAlchemyPermissionStore(db_uri)
@@ -101,6 +102,7 @@ def _build_app(
         sharing_mode=sharing_mode,
         public_sharing=public_sharing,
         default_public_sessions=default_public_sessions,  # type: ignore[arg-type]
+        admins=admins,
         **extra,
     )
     return app, permission_store
@@ -271,6 +273,21 @@ async def test_admin_put_rejected_when_deployment_managed_and_atomic(
     assert resp.status_code == 403
     # Neither setting was written (validated before any write).
     assert sharing_settings.read_public_sharing_override() is None
+
+
+@pytest.mark.asyncio
+async def test_admin_list_identity_can_manage_without_db_flag(
+    db_uri: str, tmp_path: Path, client_factory: Any
+) -> None:
+    """An admin from the roster (never promoted in the DB, e.g. header auth with
+    no login) can use the page ``/v1/me`` shows them, not a 403."""
+    listed = "roster-admin@public-default.test"
+    app, perms = _build_app(db_uri, tmp_path, admins=[listed])
+    assert not perms.is_admin(listed)
+    client = client_factory(app, listed)
+    assert (await client.get("/v1/sharing")).status_code == 200
+    put = await client.put("/v1/sharing", json={"default_public_sessions": "all"})
+    assert put.status_code == 200, put.text
 
 
 # ── session creation applies the policy ──────────────────────────────

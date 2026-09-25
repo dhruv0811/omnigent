@@ -15,6 +15,7 @@ The admin picks which NEW sessions start with a ``__public__`` read grant:
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +51,7 @@ from omnigent.stores.host_store import HostStore
 from omnigent.stores.permission_store.sqlalchemy_store import SqlAlchemyPermissionStore
 from tests.server.helpers import (
     FakeSandboxLauncher,
+    build_agent_bundle,
     create_test_agent,
     install_fake_modal_launcher,
 )
@@ -221,6 +223,9 @@ def test_default_respects_sharing_gates() -> None:
     restricted = _State("all", mode=SharingMode.RESTRICTED_READ_ONLY)
     assert not new_session_starts_public(restricted, managed=False, workspace="/home/alice")
     assert new_session_starts_public(restricted, managed=False, workspace="/home/alice/proj")
+    # Unknown cwd (forks bind later) fails closed, except for server sandboxes.
+    assert not new_session_starts_public(restricted, managed=False, workspace=None)
+    assert new_session_starts_public(restricted, managed=True, workspace=None)
     # A hand-built state without the attribute stays private.
     assert not new_session_starts_public(object(), managed=True, workspace=None)
 
@@ -347,6 +352,43 @@ async def test_side_chat_fork_stays_private(
     assert side.status_code == 201, side.text
     assert _is_public(perms, source)
     assert not _is_public(perms, side.json()["id"])
+
+
+@pytest.mark.asyncio
+async def test_fork_stays_private_under_restricted_read_only(
+    db_uri: str, tmp_path: Path, client_factory: Any
+) -> None:
+    """A fork has no workspace until it binds, and binding doesn't re-check the
+    grant, so restricted mode must not make it public up front."""
+    write_default_public_sessions_override(DefaultPublicSessions.ALL)
+    app, perms = _build_app(db_uri, tmp_path, sharing_mode=SharingMode.RESTRICTED_READ_ONLY)
+    alice = client_factory(app, _USER)
+    agent = await create_test_agent(alice, name="restricted-fork-agent", user=_USER)
+    source = await _json_create(alice, agent["id"])
+    fork = await alice.post(f"/v1/sessions/{source}/fork", json={})
+    assert fork.status_code == 201, fork.text
+    assert not _is_public(perms, fork.json()["id"])
+
+
+@pytest.mark.asyncio
+async def test_bundle_child_of_runnerless_parent_stays_private(
+    db_uri: str, tmp_path: Path, client_factory: Any
+) -> None:
+    """A bundle-uploaded child follows its parent's grants even when it didn't
+    inherit a runner (the parent has none), so it gets no public grant of its own."""
+    app, perms = _build_app(db_uri, tmp_path)
+    alice = client_factory(app, _USER)
+    parent = (await create_test_agent(alice, name="runnerless-parent", user=_USER))["_session_id"]
+    assert not _is_public(perms, parent)
+    write_default_public_sessions_override(DefaultPublicSessions.ALL)
+    resp = await alice.post(
+        "/v1/sessions",
+        data={"metadata": json.dumps({"parent_session_id": parent})},
+        files={"bundle": ("agent.tar.gz", build_agent_bundle(name="child"), "application/gzip")},
+    )
+    assert resp.status_code == 201, resp.text
+    child = resp.json()["session_id"]
+    assert not _is_public(perms, child)
 
 
 @pytest.mark.asyncio

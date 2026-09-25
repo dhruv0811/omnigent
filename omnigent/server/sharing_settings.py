@@ -244,4 +244,11 @@ def new_session_starts_public(state: Any, *, managed: bool, workspace: str | Non
     mode = getattr(state, "sharing_mode", lambda: SharingMode.ON)()
     if mode == SharingMode.OFF or not getattr(state, "public_sharing", lambda: True)():
         return False
-    return not (mode == SharingMode.RESTRICTED_READ_ONLY and workspace_sharing_blocked(workspace))
+    if mode != SharingMode.RESTRICTED_READ_ONLY:
+        return True
+    if workspace:
+        return not workspace_sharing_blocked(workspace)
+    # Unknown cwd (a fork, or a create that binds later): nothing re-checks the
+    # grant at bind time, so fail closed. Server-provisioned sandboxes are exempt;
+    # the server picks their cwd inside a disposable container.
+    return managed

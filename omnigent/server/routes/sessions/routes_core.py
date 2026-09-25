@@ -1013,7 +1013,9 @@ def register_core_routes(
             await asyncio.to_thread(
                 permission_store.grant, user_id, result.session_id, LEVEL_OWNER
             )
-            if inherited_runner_id is None:
+            # Sub-agent children follow their parent's grants, whether or not
+            # they inherited its runner.
+            if parsed_metadata.parent_session_id is None:
                 await _grant_default_public(
                     request.app.state,
                     permission_store,

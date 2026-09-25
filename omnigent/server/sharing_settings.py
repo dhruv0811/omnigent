@@ -208,6 +208,26 @@ def write_default_public_sessions_override(policy: DefaultPublicSessions) -> Non
     _write_override_text(resolve_default_public_sessions_path(), policy.value)
 
 
+def default_public_policy(state: Any) -> DefaultPublicSessions:
+    """The live default-public policy off ``app.state`` (``OFF`` when unwired)."""
+    return DefaultPublicSessions.coerce(
+        getattr(state, "default_public_sessions", lambda: DefaultPublicSessions.OFF)()
+    )
+
+
+def host_is_managed_sandbox(host_store: Any, host_id: str | None) -> bool:
+    """Whether ``host_id`` is a sandbox host the server provisioned.
+
+    ``sandbox_provider`` is stamped only on server-managed hosts, so a user's own
+    machine can't claim it. Lets a session started on an already-running sandbox
+    count as a sandbox session, not just one that requested a fresh sandbox.
+    """
+    if host_store is None or host_id is None:
+        return False
+    host = host_store.get_host(host_id)
+    return host is not None and host.sandbox_provider is not None
+
+
 def new_session_starts_public(state: Any, *, managed: bool, workspace: str | None) -> bool:
     """Whether a just-created session should get the default ``__public__`` grant.
 
@@ -216,9 +236,7 @@ def new_session_starts_public(state: Any, *, managed: bool, workspace: str | Non
     default never creates a grant an owner could not create by hand. ``state``
     is ``app.state``; ``getattr`` defaults cover hand-built test apps.
     """
-    policy = DefaultPublicSessions.coerce(
-        getattr(state, "default_public_sessions", lambda: DefaultPublicSessions.OFF)()
-    )
+    policy = default_public_policy(state)
     if policy is DefaultPublicSessions.OFF:
         return False
     if policy is DefaultPublicSessions.SANDBOX and not managed:

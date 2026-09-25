@@ -1841,23 +1841,29 @@ class _DefaultPublicState:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "policy,target,expected_public",
+    "policy,target,pinned_sandbox_host,expected_public",
     [
-        ("off", "managed_sandbox", False),
-        ("sandbox", "managed_sandbox", True),
-        ("sandbox", "connected_host", False),
-        ("all", "connected_host", True),
+        ("off", "managed_sandbox", False, False),
+        ("sandbox", "managed_sandbox", False, True),
+        ("sandbox", "connected_host", False, False),
+        # A task pinned to an existing sandbox host is a sandbox run too.
+        ("sandbox", "connected_host", True, True),
+        ("all", "connected_host", False, True),
     ],
 )
 async def test_fire_applies_default_public_policy(
-    policy: str, target: str, expected_public: bool
+    policy: str, target: str, pinned_sandbox_host: bool, expected_public: bool
 ) -> None:
     """A fired run takes the server's default-public grant like a UI-created session."""
     perm = FakePermissionStore()
     store = FakeScheduledTaskStore(rows={"task_1": _task(execution_target=target)})
+    host_provider = "agent_sandbox" if pinned_sandbox_host else None
     deps = _deps(
         store,
         permission_store=perm,
+        host_store=FakeHostStore(
+            {"host_1": _FakeHost("host_1", RESERVED_USER_LOCAL, sandbox_provider=host_provider)}
+        ),
         sandbox_config=_FakeSandboxConfig(managed_launch_supported=True),
     )
     deps.app_state = _DefaultPublicState(policy)

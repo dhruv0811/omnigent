@@ -621,18 +621,33 @@ async def _grant_default_public(
     *,
     managed: bool,
     workspace: str | None,
+    host_id: str | None = None,
 ) -> None:
     """Apply the server's default-public-sessions policy to a just-created session.
 
     Writes the read-only ``__public__`` grant when the admin setting covers this
     session (see :func:`new_session_starts_public`); a no-op otherwise, and in
-    single-user mode (no permission store).
+    single-user mode (no permission store). A session bound to a server-managed
+    sandbox host counts as managed even when it didn't request a new sandbox.
     """
-    from omnigent.server.sharing_settings import new_session_starts_public
+    from omnigent.server.sharing_settings import (
+        DefaultPublicSessions,
+        default_public_policy,
+        host_is_managed_sandbox,
+        new_session_starts_public,
+    )
 
-    if permission_store is None or not new_session_starts_public(
-        app_state, managed=managed, workspace=workspace
+    if permission_store is None:
+        return
+    if (
+        not managed
+        and host_id is not None
+        and default_public_policy(app_state) is DefaultPublicSessions.SANDBOX
     ):
+        managed = await asyncio.to_thread(
+            host_is_managed_sandbox, getattr(app_state, "host_store", None), host_id
+        )
+    if not new_session_starts_public(app_state, managed=managed, workspace=workspace):
         return
     await asyncio.to_thread(permission_store.ensure_user, RESERVED_USER_PUBLIC)
     await asyncio.to_thread(permission_store.grant, RESERVED_USER_PUBLIC, session_id, LEVEL_READ)

@@ -891,13 +891,17 @@ async def _grant_owner(deps: FireDeps, task: ScheduledTask, conversation_id: str
     else:
         owner = task.user_id
     await asyncio.to_thread(deps.permission_store.grant, owner, conversation_id, LEVEL_OWNER)
-    from omnigent.server.sharing_settings import new_session_starts_public
+    from omnigent.server.sharing_settings import (
+        host_is_managed_sandbox,
+        new_session_starts_public,
+    )
 
-    if deps.app_state is not None and new_session_starts_public(
-        deps.app_state,
-        managed=task.execution_target == "managed_sandbox",
-        workspace=task.workspace,
-    ):
+    if deps.app_state is None:
+        return
+    managed = task.execution_target == "managed_sandbox" or await asyncio.to_thread(
+        host_is_managed_sandbox, deps.host_store, task.host_id
+    )
+    if new_session_starts_public(deps.app_state, managed=managed, workspace=task.workspace):
         await asyncio.to_thread(deps.permission_store.ensure_user, RESERVED_USER_PUBLIC)
         await asyncio.to_thread(
             deps.permission_store.grant, RESERVED_USER_PUBLIC, conversation_id, LEVEL_READ

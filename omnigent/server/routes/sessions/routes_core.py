@@ -814,6 +814,7 @@ def register_core_routes(
                     resp.id,
                     managed=body.host_type == "managed",
                     workspace=conv.workspace if conv is not None else None,
+                    host_id=conv.host_id if conv is not None else body.host_id,
                 )
             resp.permission_level = await _get_permission_level(user_id, resp.id, permission_store)
         # Push the new session to this user's other open tabs (see the
@@ -1019,6 +1020,7 @@ def register_core_routes(
                     result.session_id,
                     managed=parsed_metadata.host_type == "managed",
                     workspace=parsed_metadata.workspace,
+                    host_id=parsed_metadata.host_id,
                 )
         _announce_session_added(user_id, result.session_id)
         # Managed bundle create: provision a sandbox host for the
@@ -3486,6 +3488,7 @@ def register_core_routes(
                     new_conv.id,
                     managed=body.host_type == "managed",
                     workspace=new_conv.workspace,
+                    host_id=new_conv.host_id,
                 )
         # Push the forked session to this user's other open tabs — but NOT a
         # side chat: it surfaces only as a Workspace-rail tab, never a sidebar

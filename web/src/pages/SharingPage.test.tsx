@@ -5,7 +5,7 @@
 // gate admin) and the react-query sharing hooks, so no QueryClient or
 // network is needed.
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SharingPage } from "./SharingPage";
 import * as identity from "@/lib/identity";
@@ -47,8 +47,18 @@ function state(overrides: Partial<SharingState> = {}): SharingState {
     options: ["on", "read_only", "restricted_read_only", "off"],
     public_sharing_enabled: true,
     public_sharing_editable: true,
+    default_public_sessions: "off",
+    default_public_sessions_editable: true,
+    default_public_sessions_options: ["off", "sandbox", "all"],
     ...overrides,
   };
+}
+
+/** Radios of one fieldset, so the tier and default-public groups stay separate. */
+function radiosIn(group: string): HTMLInputElement[] {
+  return within(screen.getByRole("group", { name: group })).getAllByRole(
+    "radio",
+  ) as HTMLInputElement[];
 }
 
 function setSharingState(s: SharingState | undefined, isLoading = false) {
@@ -86,7 +96,7 @@ describe("SharingPage", () => {
     expect(screen.getByText("Off")).toBeInTheDocument();
 
     // The current tier's radio is checked; a different one is not.
-    const radios = screen.getAllByRole("radio") as HTMLInputElement[];
+    const radios = radiosIn("Session sharing mode");
     expect(radios).toHaveLength(4);
     const readOnly = radios.find((r) => r.value === "read_only")!;
     const off = radios.find((r) => r.value === "off")!;
@@ -100,7 +110,7 @@ describe("SharingPage", () => {
     render(<SharingPage />);
     await waitFor(() => expect(screen.getByText("On")).toBeInTheDocument());
 
-    const restricted = (screen.getAllByRole("radio") as HTMLInputElement[]).find(
+    const restricted = radiosIn("Session sharing mode").find(
       (r) => r.value === "restricted_read_only",
     )!;
     fireEvent.click(restricted);
@@ -122,7 +132,7 @@ describe("SharingPage", () => {
     );
 
     // Radios are disabled; clicking does nothing.
-    const radios = screen.getAllByRole("radio") as HTMLInputElement[];
+    const radios = radiosIn("Session sharing mode");
     expect(radios.every((r) => r.disabled)).toBe(true);
     fireEvent.click(radios.find((r) => r.value === "off")!);
     expect(setModeMutate).not.toHaveBeenCalled();
@@ -175,6 +185,56 @@ describe("SharingPage", () => {
       expect(toggle).toBeDisabled();
       fireEvent.click(toggle);
       expect(setModeMutate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("default visibility for new sessions", () => {
+    const GROUP = "Default visibility for new sessions";
+
+    it("shows the three options with the current one selected", async () => {
+      setSharingState(state({ default_public_sessions: "sandbox" }));
+
+      render(<SharingPage />);
+      await waitFor(() => expect(screen.getByText("On")).toBeInTheDocument());
+
+      const radios = radiosIn(GROUP);
+      expect(radios.map((r) => r.value)).toEqual(["off", "sandbox", "all"]);
+      expect(radios.find((r) => r.value === "sandbox")!.checked).toBe(true);
+      expect(screen.queryByText(/has no effect/i)).not.toBeInTheDocument();
+    });
+
+    it("calls the mutation with the chosen default", async () => {
+      setSharingState(state());
+
+      render(<SharingPage />);
+      await waitFor(() => expect(screen.getByText("On")).toBeInTheDocument());
+
+      fireEvent.click(radiosIn(GROUP).find((r) => r.value === "all")!);
+
+      expect(setModeMutate).toHaveBeenCalledWith(
+        { default_public_sessions: "all" },
+        expect.anything(),
+      );
+    });
+
+    it("is disabled when deployment-managed", async () => {
+      setSharingState(state({ default_public_sessions_editable: false }));
+
+      render(<SharingPage />);
+      await waitFor(() => expect(screen.getByText("On")).toBeInTheDocument());
+
+      const radios = radiosIn(GROUP);
+      expect(radios.every((r) => r.disabled)).toBe(true);
+      fireEvent.click(radios.find((r) => r.value === "all")!);
+      expect(setModeMutate).not.toHaveBeenCalled();
+    });
+
+    it("warns it has no effect while public access is off", async () => {
+      setSharingState(state({ public_sharing_enabled: false }));
+
+      render(<SharingPage />);
+
+      await waitFor(() => expect(screen.getByText(/has no effect/i)).toBeInTheDocument());
     });
   });
 });

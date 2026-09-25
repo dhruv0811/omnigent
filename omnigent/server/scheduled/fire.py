@@ -58,7 +58,7 @@ from omnigent.db.account_authority import account_authority_scope
 from omnigent.db.db_models import workspace_scope
 from omnigent.entities import Conversation, ScheduledTask
 from omnigent.errors import ErrorCode, OmnigentError
-from omnigent.server.auth import LEVEL_OWNER, RESERVED_USER_LOCAL
+from omnigent.server.auth import LEVEL_OWNER, LEVEL_READ, RESERVED_USER_LOCAL, RESERVED_USER_PUBLIC
 from omnigent.server.host_registry import host_owner_scope
 from omnigent.server.routes._session_create_validation import (
     validate_existing_host_workspace,
@@ -144,6 +144,9 @@ class FireDeps:
     # which case a ``managed_sandbox`` task records a failed run.
     sandbox_config: Any | None = None
     managed_launches: Any | None = None
+    # ``app.state``, read per fire for the default-public-sessions policy.
+    # ``None`` (tests, embedders) leaves every fired session private.
+    app_state: Any | None = None
 
 
 @dataclass
@@ -489,7 +492,7 @@ async def _run_fire_for_task(
         await _attach_cost_budget(deps, task, conv.id)
 
         try:
-            await _grant_owner(deps, task, conv.id)
+            await _grant_owner(deps, effective, conv.id)
         except Exception:
             _logger.exception(
                 "scheduled fire: owner grant failed for task %s (session %s)",
@@ -871,7 +874,8 @@ async def _attach_cost_budget(deps: FireDeps, task: ScheduledTask, conversation_
 
 
 async def _grant_owner(deps: FireDeps, task: ScheduledTask, conversation_id: str) -> None:
-    """Write the LEVEL_OWNER grant so the run is visible to its owner.
+    """Write the LEVEL_OWNER grant so the run is visible to its owner, plus the
+    default ``__public__`` read grant when the server's policy covers the run.
 
     A NULL ``user_id`` (single-user / OSS) resolves to
     :data:`RESERVED_USER_LOCAL`, whose row is created on demand. A real owner's
@@ -887,6 +891,17 @@ async def _grant_owner(deps: FireDeps, task: ScheduledTask, conversation_id: str
     else:
         owner = task.user_id
     await asyncio.to_thread(deps.permission_store.grant, owner, conversation_id, LEVEL_OWNER)
+    from omnigent.server.sharing_settings import new_session_starts_public
+
+    if deps.app_state is not None and new_session_starts_public(
+        deps.app_state,
+        managed=task.execution_target == "managed_sandbox",
+        workspace=task.workspace,
+    ):
+        await asyncio.to_thread(deps.permission_store.ensure_user, RESERVED_USER_PUBLIC)
+        await asyncio.to_thread(
+            deps.permission_store.grant, RESERVED_USER_PUBLIC, conversation_id, LEVEL_READ
+        )
 
 
 async def _record_run(

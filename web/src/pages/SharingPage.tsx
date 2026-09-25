@@ -16,7 +16,7 @@ import { type SharingMode, isSingleUserMode } from "@/lib/capabilities";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
 import { getCurrentIsAdmin, resolveIdentity } from "@/lib/identity";
 import { cn } from "@/lib/utils";
-import { useSetSharing, useSharing } from "@/hooks/useSharing";
+import { type DefaultPublicSessions, useSetSharing, useSharing } from "@/hooks/useSharing";
 
 /** The four tiers, most-permissive first, with human-readable copy. */
 const TIERS: { id: SharingMode; label: string; description: string }[] = [
@@ -45,6 +45,27 @@ const TIERS: { id: SharingMode; label: string; description: string }[] = [
       "Sharing is disabled. No new grants can be created and the Share control is hidden.",
   },
 ];
+
+/** Which new sessions start public, most-private first. */
+const DEFAULT_PUBLIC_OPTIONS: { id: DefaultPublicSessions; label: string; description: string }[] =
+  [
+    {
+      id: "off",
+      label: "Private",
+      description: "New sessions start private. Owners share them explicitly.",
+    },
+    {
+      id: "sandbox",
+      label: "Cloud sandbox sessions public",
+      description:
+        "Sessions running in a server-managed cloud sandbox start with public read access. Sessions on a user's own machine stay private.",
+    },
+    {
+      id: "all",
+      label: "All sessions public",
+      description: "Every new session starts with public read access.",
+    },
+  ];
 
 export function SharingPage() {
   const info = useServerInfo();
@@ -91,6 +112,10 @@ export function SharingPage() {
   const editable = state?.editable ?? false;
   const publicEnabled = state?.public_sharing_enabled ?? true;
   const publicEditable = state?.public_sharing_editable ?? false;
+  const defaultPublic = state?.default_public_sessions ?? "off";
+  const defaultPublicEditable = state?.default_public_sessions_editable ?? false;
+  // The default only writes grants a manual share could create.
+  const defaultPublicInert = !publicEnabled || current === "off";
 
   function choose(mode: SharingMode) {
     if (!editable || mode === current || setMode.isPending) return;
@@ -102,6 +127,12 @@ export function SharingPage() {
     if (!publicEditable || setMode.isPending) return;
     setError(null);
     setMode.mutate({ public_sharing: next }, { onError: (err) => setError(err.message) });
+  }
+
+  function chooseDefaultPublic(next: DefaultPublicSessions) {
+    if (!defaultPublicEditable || next === defaultPublic || setMode.isPending) return;
+    setError(null);
+    setMode.mutate({ default_public_sessions: next }, { onError: (err) => setError(err.message) });
   }
 
   return (
@@ -183,6 +214,62 @@ export function SharingPage() {
                 aria-label="Public access"
                 componentId="settings.sharing.public_access"
               />
+            </div>
+            {/* Default visibility of NEW sessions: writes a public read grant at creation. */}
+            <div className="mt-6">
+              <p className="text-ui font-medium">Default visibility for new sessions</p>
+              <p className="mt-0.5 mb-2 text-sm text-muted-foreground">
+                Whether new sessions start with public read access. Owners can still revoke it from
+                the Share dialog. Existing sessions are unchanged.
+              </p>
+              {!defaultPublicEditable && (
+                <p className="mb-2 text-sm text-muted-foreground">
+                  Managed by this deployment and can't be changed here.
+                </p>
+              )}
+              {defaultPublicInert && (
+                <p className="mb-2 text-sm text-muted-foreground">
+                  Has no effect while sharing or public access is off.
+                </p>
+              )}
+              <fieldset
+                className="space-y-2"
+                disabled={!defaultPublicEditable || setMode.isPending}
+                aria-label="Default visibility for new sessions"
+              >
+                {DEFAULT_PUBLIC_OPTIONS.map((option) => {
+                  const selected = option.id === defaultPublic;
+                  return (
+                    <label
+                      key={option.id}
+                      className={cn(
+                        "flex cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-colors",
+                        selected
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:bg-muted/50",
+                        (!defaultPublicEditable || setMode.isPending) &&
+                          "cursor-not-allowed opacity-70",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="default-public-sessions"
+                        value={option.id}
+                        checked={selected}
+                        onChange={() => chooseDefaultPublic(option.id)}
+                        disabled={!defaultPublicEditable || setMode.isPending}
+                        className="mt-1 size-4 accent-primary"
+                      />
+                      <span className="flex-1">
+                        <span className="block text-ui font-medium">{option.label}</span>
+                        <span className="mt-0.5 block text-sm text-muted-foreground">
+                          {option.description}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </fieldset>
             </div>
             {error && <p className="mt-3 text-ui text-destructive">{error}</p>}
           </>

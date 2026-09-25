@@ -614,6 +614,30 @@ def _announce_session_added(user_id: str | None, session_id: str) -> None:
     )
 
 
+async def _grant_default_public(
+    app_state: Any,
+    permission_store: PermissionStore | None,
+    session_id: str,
+    *,
+    managed: bool,
+    workspace: str | None,
+) -> None:
+    """Apply the server's default-public-sessions policy to a just-created session.
+
+    Writes the read-only ``__public__`` grant when the admin setting covers this
+    session (see :func:`new_session_starts_public`); a no-op otherwise, and in
+    single-user mode (no permission store).
+    """
+    from omnigent.server.sharing_settings import new_session_starts_public
+
+    if permission_store is None or not new_session_starts_public(
+        app_state, managed=managed, workspace=workspace
+    ):
+        return
+    await asyncio.to_thread(permission_store.ensure_user, RESERVED_USER_PUBLIC)
+    await asyncio.to_thread(permission_store.grant, RESERVED_USER_PUBLIC, session_id, LEVEL_READ)
+
+
 def announce_hosts_changed(user_id: str | None) -> None:
     """
     Push a ``hosts_changed`` event to a user's session-updates streams.
@@ -11347,6 +11371,7 @@ __all__ = [
     "_forward_session_change_to_runner",
     "_get_runner_client",
     "_get_runner_client_for_resource_access",
+    "_grant_default_public",
     "_handle_advise_models_mcp",
     "_handle_external_session_todos",
     "_handle_mcp_tools_list",

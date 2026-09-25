@@ -131,6 +131,7 @@ from omnigent.server.routes._sessions.helpers import (
     _filesystem_attachment_in_history,
     _forward_session_change_to_runner,
     _get_runner_client,
+    _grant_default_public,
     _invalidate_runner_backed_snapshot_state,
     _multipart_missing_detail,
     _native_coding_agent_for_agent,
@@ -804,6 +805,16 @@ def register_core_routes(
         if permission_store is not None and user_id is not None:
             await asyncio.to_thread(permission_store.ensure_user, user_id)
             await asyncio.to_thread(permission_store.grant, user_id, resp.id, LEVEL_OWNER)
+            # Sub-agent children follow their parent's grants, so only
+            # top-level sessions take the default-public policy.
+            if body.parent_session_id is None:
+                await _grant_default_public(
+                    request.app.state,
+                    permission_store,
+                    resp.id,
+                    managed=body.host_type == "managed",
+                    workspace=conv.workspace if conv is not None else None,
+                )
             resp.permission_level = await _get_permission_level(user_id, resp.id, permission_store)
         # Push the new session to this user's other open tabs (see the
         # multipart path above for the rationale).
@@ -1001,6 +1012,14 @@ def register_core_routes(
             await asyncio.to_thread(
                 permission_store.grant, user_id, result.session_id, LEVEL_OWNER
             )
+            if inherited_runner_id is None:
+                await _grant_default_public(
+                    request.app.state,
+                    permission_store,
+                    result.session_id,
+                    managed=parsed_metadata.host_type == "managed",
+                    workspace=parsed_metadata.workspace,
+                )
         _announce_session_added(user_id, result.session_id)
         # Managed bundle create: provision a sandbox host for the
         # just-uploaded session-scoped agent (same background launch as
@@ -3459,6 +3478,15 @@ def register_core_routes(
         if permission_store is not None and user_id is not None:
             await asyncio.to_thread(permission_store.ensure_user, user_id)
             await asyncio.to_thread(permission_store.grant, user_id, new_conv.id, LEVEL_OWNER)
+            # A side chat is a private scratch fork of the caller's own view.
+            if not body.side_chat:
+                await _grant_default_public(
+                    request.app.state,
+                    permission_store,
+                    new_conv.id,
+                    managed=body.host_type == "managed",
+                    workspace=new_conv.workspace,
+                )
         # Push the forked session to this user's other open tabs — but NOT a
         # side chat: it surfaces only as a Workspace-rail tab, never a sidebar
         # row, so announcing it would leak it into every open sidebar (the

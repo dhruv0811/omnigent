@@ -9,7 +9,9 @@ redeploy:
 - the sharing *mode* — ``OMNIGENT_SHARING_MODE`` → ``<data_dir>/sharing_mode``
   (``on`` / ``read_only`` / ``restricted_read_only`` / ``off``);
 - whether *public* (anyone-with-the-link) read access may be granted —
-  ``OMNIGENT_PUBLIC_SHARING`` → ``<data_dir>/public_sharing`` (``on`` / ``off``).
+  ``OMNIGENT_PUBLIC_SHARING`` → ``<data_dir>/public_sharing`` (``on`` / ``off``);
+- which *new* sessions start public: ``OMNIGENT_DEFAULT_PUBLIC_SESSIONS`` →
+  ``<data_dir>/default_public_sessions`` (``off`` / ``sandbox`` / ``all``).
 
 A missing, empty, or unreadable file means "no override recorded", so the caller
 falls back to the env-var default; an unrecognized value is likewise ignored
@@ -24,15 +26,18 @@ import contextlib
 import logging
 import os
 import tempfile
+from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from omnigent.server.admin_list import resolve_data_dir
-from omnigent.server.auth import SharingMode
+from omnigent.server.auth import SharingMode, workspace_sharing_blocked
 
 logger = logging.getLogger(__name__)
 
 _SHARING_MODE_FILE = "sharing_mode"
 _PUBLIC_SHARING_FILE = "public_sharing"
+_DEFAULT_PUBLIC_SESSIONS_FILE = "default_public_sessions"
 # Public sharing is enabled unless a value explicitly says otherwise, so a typo
 # or a stray value fails OPEN (never silently disables a working feature).
 _PUBLIC_FALSY = ("0", "false", "no", "off")
@@ -51,6 +56,40 @@ def resolve_sharing_mode_path() -> Path:
 def resolve_public_sharing_path() -> Path:
     """Path of the file holding the admin public-sharing override."""
     return resolve_data_dir() / _PUBLIC_SHARING_FILE
+
+
+def resolve_default_public_sessions_path() -> Path:
+    """Path of the file holding the admin default-public-sessions override."""
+    return resolve_data_dir() / _DEFAULT_PUBLIC_SESSIONS_FILE
+
+
+class DefaultPublicSessions(str, Enum):
+    """Which newly created sessions get a public (anyone-with-the-link) read grant.
+
+    - ``OFF``: every session starts private (the default).
+    - ``SANDBOX``: sessions running in a server-managed cloud sandbox start
+      public; sessions on a user's own machine stay private.
+    - ``ALL``: every new session starts public.
+
+    Only the creation default: owners can still revoke the public grant.
+    """
+
+    OFF = "off"
+    SANDBOX = "sandbox"
+    ALL = "all"
+
+    @classmethod
+    def coerce(cls, value: object) -> DefaultPublicSessions:
+        """Map a value to a policy, failing closed to ``OFF`` (private) for
+        anything unset or unrecognized so a typo never exposes sessions."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            try:
+                return cls(value.strip().lower())
+            except ValueError:
+                pass
+        return cls.OFF
 
 
 def _read_override_text(path: Path) -> str | None:
@@ -144,3 +183,47 @@ def read_public_sharing_override() -> bool | None:
 def write_public_sharing_override(enabled: bool) -> None:
     """Persist the admin public-sharing override atomically."""
     _write_override_text(resolve_public_sharing_path(), "on" if enabled else "off")
+
+
+def default_public_sessions_env_default() -> DefaultPublicSessions:
+    """Boot default from ``OMNIGENT_DEFAULT_PUBLIC_SESSIONS`` (``off`` if unset)."""
+    return DefaultPublicSessions.coerce(os.environ.get("OMNIGENT_DEFAULT_PUBLIC_SESSIONS"))
+
+
+def read_default_public_sessions_override() -> DefaultPublicSessions | None:
+    """Return the admin-set default-public-sessions override, or ``None`` when
+    unset or unrecognized (the caller falls back to the env-var default)."""
+    raw = _read_override_text(resolve_default_public_sessions_path())
+    if not raw:
+        return None
+    try:
+        return DefaultPublicSessions(raw.lower())
+    except ValueError:
+        logger.warning("Ignoring unrecognized default_public_sessions override %r", raw)
+        return None
+
+
+def write_default_public_sessions_override(policy: DefaultPublicSessions) -> None:
+    """Persist the admin default-public-sessions override atomically."""
+    _write_override_text(resolve_default_public_sessions_path(), policy.value)
+
+
+def new_session_starts_public(state: Any, *, managed: bool, workspace: str | None) -> bool:
+    """Whether a just-created session should get the default ``__public__`` grant.
+
+    Combines the default-public policy with the grant gates a manual share would
+    hit (sharing mode, public-access switch, restricted workspaces), so the
+    default never creates a grant an owner could not create by hand. ``state``
+    is ``app.state``; ``getattr`` defaults cover hand-built test apps.
+    """
+    policy = DefaultPublicSessions.coerce(
+        getattr(state, "default_public_sessions", lambda: DefaultPublicSessions.OFF)()
+    )
+    if policy is DefaultPublicSessions.OFF:
+        return False
+    if policy is DefaultPublicSessions.SANDBOX and not managed:
+        return False
+    mode = getattr(state, "sharing_mode", lambda: SharingMode.ON)()
+    if mode == SharingMode.OFF or not getattr(state, "public_sharing", lambda: True)():
+        return False
+    return not (mode == SharingMode.RESTRICTED_READ_ONLY and workspace_sharing_blocked(workspace))

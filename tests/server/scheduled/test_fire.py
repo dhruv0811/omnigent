@@ -26,7 +26,7 @@ import pytest
 
 from omnigent.db.db_models import current_workspace_id
 from omnigent.entities import ScheduledTask
-from omnigent.server.auth import LEVEL_OWNER, RESERVED_USER_LOCAL
+from omnigent.server.auth import LEVEL_OWNER, LEVEL_READ, RESERVED_USER_LOCAL, RESERVED_USER_PUBLIC
 from omnigent.server.scheduled import fire as fire_mod
 from omnigent.server.scheduled.fire import FireDeps, build_on_fire, build_run_now
 
@@ -1830,3 +1830,46 @@ async def test_policy_create_failure_does_not_fail_fire() -> None:
     assert len(conv_store.created) == 1
     assert len(launched) == 1
     assert store.runs[0]["status"] == "running"
+
+
+class _DefaultPublicState:
+    """Minimal ``app.state`` carrying only the default-public policy."""
+
+    def __init__(self, policy: str) -> None:
+        self.default_public_sessions = lambda: policy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "policy,target,expected_public",
+    [
+        ("off", "managed_sandbox", False),
+        ("sandbox", "managed_sandbox", True),
+        ("sandbox", "connected_host", False),
+        ("all", "connected_host", True),
+    ],
+)
+async def test_fire_applies_default_public_policy(
+    policy: str, target: str, expected_public: bool
+) -> None:
+    """A fired run takes the server's default-public grant like a UI-created session."""
+    perm = FakePermissionStore()
+    store = FakeScheduledTaskStore(rows={"task_1": _task(execution_target=target)})
+    deps = _deps(
+        store,
+        permission_store=perm,
+        sandbox_config=_FakeSandboxConfig(managed_launch_supported=True),
+    )
+    deps.app_state = _DefaultPublicState(policy)
+
+    async def _launch(conv: Any, task: Any) -> None:
+        return None
+
+    on_fire = build_on_fire(deps, launch_dispatch=_launch)
+    await on_fire(0, "task_1")
+    await _drain()
+
+    public = [g for g in perm.grants if g[0] == RESERVED_USER_PUBLIC]
+    assert bool(public) is expected_public
+    if expected_public:
+        assert public[0][2] == LEVEL_READ

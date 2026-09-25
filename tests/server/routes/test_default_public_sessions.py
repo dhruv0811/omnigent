@@ -78,7 +78,6 @@ def _build_app(
     sharing_mode: SharingMode | None = None,
     public_sharing: bool | None = None,
     managed: bool = False,
-    admins: list[str] | None = None,
 ) -> tuple[FastAPI, SqlAlchemyPermissionStore]:
     """Real multi-user ``create_app`` on SQLite with an admin and a user."""
     permission_store = SqlAlchemyPermissionStore(db_uri)
@@ -106,7 +105,6 @@ def _build_app(
         sharing_mode=sharing_mode,
         public_sharing=public_sharing,
         default_public_sessions=default_public_sessions,  # type: ignore[arg-type]
-        admins=admins,
         **extra,
     )
     return app, permission_store
@@ -282,21 +280,6 @@ async def test_admin_put_rejected_when_deployment_managed_and_atomic(
     assert sharing_settings.read_public_sharing_override() is None
 
 
-@pytest.mark.asyncio
-async def test_admin_list_identity_can_manage_without_db_flag(
-    db_uri: str, tmp_path: Path, client_factory: Any
-) -> None:
-    """An admin from the roster (never promoted in the DB, e.g. header auth with
-    no login) can use the page ``/v1/me`` shows them, not a 403."""
-    listed = "roster-admin@public-default.test"
-    app, perms = _build_app(db_uri, tmp_path, admins=[listed])
-    assert not perms.is_admin(listed)
-    client = client_factory(app, listed)
-    assert (await client.get("/v1/sharing")).status_code == 200
-    put = await client.put("/v1/sharing", json={"default_public_sessions": "all"})
-    assert put.status_code == 200, put.text
-
-
 # ── session creation applies the policy ──────────────────────────────
 
 
@@ -389,6 +372,69 @@ async def test_bundle_child_of_runnerless_parent_stays_private(
     assert resp.status_code == 201, resp.text
     child = resp.json()["session_id"]
     assert not _is_public(perms, child)
+
+
+def _public_sessions(db_uri: str, perms: SqlAlchemyPermissionStore) -> list[str]:
+    """Every session in the DB that carries a ``__public__`` grant."""
+    convs = SqlAlchemyConversationStore(db_uri).list_conversations(limit=200).data
+    return [c.id for c in convs if _is_public(perms, c.id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["sandbox", "all"])
+async def test_rejected_managed_request_leaves_no_public_session(
+    db_uri: str, tmp_path: Path, client_factory: Any, policy: str
+) -> None:
+    """A managed request the server rejects (no ``sandbox:`` config) may leave the
+    owner's session behind, but never a public one: the default grant is written
+    only after the launch is accepted. Covers JSON create, bundle create and fork."""
+    app, perms = _build_app(db_uri, tmp_path)  # no sandbox config
+    alice = client_factory(app, _USER)
+    agent = await create_test_agent(alice, name="rejected-managed-agent", user=_USER)
+    source = await _json_create(alice, agent["id"])
+    write_default_public_sessions_override(DefaultPublicSessions(policy))
+    public_before = set(_public_sessions(db_uri, perms))
+
+    json_create = await alice.post(
+        "/v1/sessions",
+        json={
+            "agent_id": agent["id"],
+            "host_type": "managed",
+            "initial_items": [
+                {
+                    "type": "message",
+                    "data": {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                }
+            ],
+        },
+    )
+    bundle_create = await alice.post(
+        "/v1/sessions",
+        data={"metadata": json.dumps({"host_type": "managed"})},
+        files={"bundle": ("agent.tar.gz", build_agent_bundle(name="managed"), "application/gzip")},
+    )
+    fork = await alice.post(f"/v1/sessions/{source}/fork", json={"host_type": "managed"})
+
+    for resp in (json_create, bundle_create, fork):
+        assert resp.status_code >= 400, resp.text
+    assert set(_public_sessions(db_uri, perms)) == public_before
+
+
+def test_invalid_override_file_fails_closed(
+    db_uri: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Garbage in the override file resolves to ``off`` even when the env default is
+    permissive; only a missing file falls back to the env default."""
+    monkeypatch.setenv("OMNIGENT_DEFAULT_PUBLIC_SESSIONS", "all")
+    app, _ = _build_app(db_uri, tmp_path)
+    assert app.state.default_public_sessions() is DefaultPublicSessions.ALL
+    sharing_settings.resolve_default_public_sessions_path().parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    sharing_settings.resolve_default_public_sessions_path().write_text("everything\n")
+    sharing_settings._cache = {}
+    assert read_default_public_sessions_override() is DefaultPublicSessions.OFF
+    assert app.state.default_public_sessions() is DefaultPublicSessions.OFF
 
 
 @pytest.mark.asyncio

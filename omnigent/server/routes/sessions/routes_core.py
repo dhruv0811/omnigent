@@ -805,17 +805,6 @@ def register_core_routes(
         if permission_store is not None and user_id is not None:
             await asyncio.to_thread(permission_store.ensure_user, user_id)
             await asyncio.to_thread(permission_store.grant, user_id, resp.id, LEVEL_OWNER)
-            # Sub-agent children follow their parent's grants, so only
-            # top-level sessions take the default-public policy.
-            if body.parent_session_id is None:
-                await _grant_default_public(
-                    request.app.state,
-                    permission_store,
-                    resp.id,
-                    managed=body.host_type == "managed",
-                    workspace=conv.workspace if conv is not None else None,
-                    host_id=conv.host_id if conv is not None else body.host_id,
-                )
             resp.permission_level = await _get_permission_level(user_id, resp.id, permission_store)
         # Push the new session to this user's other open tabs (see the
         # multipart path above for the rationale).
@@ -868,6 +857,18 @@ def register_core_routes(
                 resp.runner_id = runner_id
                 resp.host_id = launch_host_id
 
+        # Default-public grant only once every launch step has been accepted, so a
+        # rejected request never leaves a public session behind. Sub-agent
+        # children follow their parent's grants instead.
+        if user_id is not None and body.parent_session_id is None:
+            await _grant_default_public(
+                request.app.state,
+                permission_store,
+                resp.id,
+                managed=body.host_type == "managed",
+                workspace=conv.workspace if conv is not None else None,
+                host_id=launch_host_id,
+            )
         add_audit_attrs(session_id=resp.id, agent=resp.agent_id)
         return resp
 
@@ -1013,17 +1014,6 @@ def register_core_routes(
             await asyncio.to_thread(
                 permission_store.grant, user_id, result.session_id, LEVEL_OWNER
             )
-            # Sub-agent children follow their parent's grants, whether or not
-            # they inherited its runner.
-            if parsed_metadata.parent_session_id is None:
-                await _grant_default_public(
-                    request.app.state,
-                    permission_store,
-                    result.session_id,
-                    managed=parsed_metadata.host_type == "managed",
-                    workspace=parsed_metadata.workspace,
-                    host_id=parsed_metadata.host_id,
-                )
         _announce_session_added(user_id, result.session_id)
         # Managed bundle create: provision a sandbox host for the
         # just-uploaded session-scoped agent (same background launch as
@@ -1062,6 +1052,18 @@ def register_core_routes(
                 host_id=parsed_metadata.host_id,
                 workspace=parsed_metadata.workspace,
                 harness=canonicalize_harness(raw_harness) or raw_harness,
+            )
+        # Default-public grant only after the launch steps were accepted (see the
+        # JSON path). Sub-agent children follow their parent's grants, whether or
+        # not they inherited its runner.
+        if user_id is not None and parsed_metadata.parent_session_id is None:
+            await _grant_default_public(
+                request.app.state,
+                permission_store,
+                result.session_id,
+                managed=parsed_metadata.host_type == "managed",
+                workspace=parsed_metadata.workspace,
+                host_id=parsed_metadata.host_id,
             )
         return result
 
@@ -3482,16 +3484,6 @@ def register_core_routes(
         if permission_store is not None and user_id is not None:
             await asyncio.to_thread(permission_store.ensure_user, user_id)
             await asyncio.to_thread(permission_store.grant, user_id, new_conv.id, LEVEL_OWNER)
-            # A side chat is a private scratch fork of the caller's own view.
-            if not body.side_chat:
-                await _grant_default_public(
-                    request.app.state,
-                    permission_store,
-                    new_conv.id,
-                    managed=body.host_type == "managed",
-                    workspace=new_conv.workspace,
-                    host_id=new_conv.host_id,
-                )
         # Push the forked session to this user's other open tabs — but NOT a
         # side chat: it surfaces only as a Workspace-rail tab, never a sidebar
         # row, so announcing it would leak it into every open sidebar (the
@@ -3524,6 +3516,18 @@ def register_core_routes(
                 user_id=user_id,
                 sandbox_provider=body.sandbox_provider,
                 workspaces=fork_workspaces,
+            )
+        # Default-public grant only after the managed launch was accepted (see
+        # the create paths). A side chat is a private scratch fork of the
+        # caller's own view.
+        if user_id is not None and not body.side_chat:
+            await _grant_default_public(
+                request.app.state,
+                permission_store,
+                new_conv.id,
+                managed=body.host_type == "managed",
+                workspace=new_conv.workspace,
+                host_id=new_conv.host_id,
             )
 
         # Bound the response like the GET-session snapshot: newest item page,

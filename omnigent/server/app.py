@@ -3248,7 +3248,6 @@ def create_app(
         create_sharing_router(
             auth_provider=auth_provider,
             permission_store=permission_store,
-            admin_list=admin_list,
         ),
         prefix="/v1",
         tags=["sharing"],

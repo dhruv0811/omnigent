@@ -191,16 +191,20 @@ def default_public_sessions_env_default() -> DefaultPublicSessions:
 
 
 def read_default_public_sessions_override() -> DefaultPublicSessions | None:
-    """Return the admin-set default-public-sessions override, or ``None`` when
-    unset or unrecognized (the caller falls back to the env-var default)."""
+    """Return the admin-set default-public-sessions override, or ``None`` when unset.
+
+    Unlike the other overrides, an unrecognized value resolves to ``OFF`` rather
+    than falling back to the env-var default: a corrupted or hand-edited file
+    must never restore a more permissive boot default.
+    """
     raw = _read_override_text(resolve_default_public_sessions_path())
     if not raw:
         return None
     try:
         return DefaultPublicSessions(raw.lower())
     except ValueError:
-        logger.warning("Ignoring unrecognized default_public_sessions override %r", raw)
-        return None
+        logger.warning("Unrecognized default_public_sessions override %r; using off", raw)
+        return DefaultPublicSessions.OFF
 
 
 def write_default_public_sessions_override(policy: DefaultPublicSessions) -> None:

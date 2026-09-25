@@ -498,7 +498,10 @@ async def test_initial_item_schedules_background_semantic_title(
     async def get_runner_client(
         _session_id: str,
         _runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient:
+        assert conversation is None or conversation.id == _session_id
         return fake_runner
 
     monkeypatch.setattr(
@@ -2028,6 +2031,8 @@ async def test_skill_slash_command_persists_visible_item_and_hidden_meta_message
     async def _fake_get_runner_client(
         session_id: str,
         runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient:
         """
         Resolve every session to the fake runner client.
@@ -2036,6 +2041,7 @@ async def test_skill_slash_command_persists_visible_item_and_hidden_meta_message
         :param runner_router: Real app runner router, unused here.
         :returns: The fake runner client.
         """
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -2160,6 +2166,8 @@ async def test_skill_slash_command_keeps_existing_title(
     async def _fake_get_runner_client(
         session_id: str,
         runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient:
         """
         Resolve every session to the fake runner client.
@@ -2168,6 +2176,7 @@ async def test_skill_slash_command_keeps_existing_title(
         :param runner_router: Real app runner router, unused here.
         :returns: The fake runner client.
         """
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -2227,8 +2236,14 @@ async def test_skill_slash_command_non_json_resolve_surfaces_controlled_error(
         base_url="http://runner",
     )
 
-    async def _fake_get_runner_client(session_id: str, runner_router: object) -> httpx.AsyncClient:
+    async def _fake_get_runner_client(
+        session_id: str,
+        runner_router: object,
+        *,
+        conversation: Any = None,
+    ) -> httpx.AsyncClient:
         """Resolve every session to the fake runner."""
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -2293,8 +2308,14 @@ async def test_skill_slash_command_missing_session_agent_returns_typed_410(
         base_url="http://runner",
     )
 
-    async def _fake_get_runner_client(session_id: str, runner_router: object) -> httpx.AsyncClient:
+    async def _fake_get_runner_client(
+        session_id: str,
+        runner_router: object,
+        *,
+        conversation: Any = None,
+    ) -> httpx.AsyncClient:
         """Resolve every session to the fake runner."""
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -4912,6 +4933,8 @@ async def test_patch_runner_rebind_clears_stale_failed_status(
     async def _get_runner_client(
         _session_id: str,
         _runner_router: Any,
+        *,
+        conversation: Any = None,
     ) -> _RecoveringRunnerClient:
         """
         Return the recovering runner client for the patched session.
@@ -4920,6 +4943,7 @@ async def test_patch_runner_rebind_clears_stale_failed_status(
         :param _runner_router: Ignored runner router placeholder.
         :returns: Runner client stub.
         """
+        assert conversation is None or conversation.id == _session_id
         return runner_client
 
     async def _ensure_runner_relay_ready(
@@ -5041,6 +5065,8 @@ async def test_post_external_session_status_idle_forwards_persisted_assistant_ou
     async def _fake_get_runner_client(
         session_id: str,
         runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient:
         """
         Resolve the session to the fake runner client.
@@ -5049,6 +5075,7 @@ async def test_post_external_session_status_idle_forwards_persisted_assistant_ou
         :param runner_router: Real app runner router, unused here.
         :returns: The fake runner client.
         """
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -5152,6 +5179,8 @@ async def test_post_external_session_status_failed_forwards_persisted_assistant_
     async def _fake_get_runner_client(
         session_id: str,
         runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient:
         """
         Resolve the session to the fake runner client.
@@ -5160,6 +5189,7 @@ async def test_post_external_session_status_failed_forwards_persisted_assistant_
         :param runner_router: Real app runner router, unused here.
         :returns: The fake runner client.
         """
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -5358,6 +5388,8 @@ async def test_post_external_session_status_propagates_runner_delivery_failure(
     async def _fake_get_runner_client(
         session_id: str,
         runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient:
         """
         Resolve every session to the fake runner client.
@@ -5366,6 +5398,7 @@ async def test_post_external_session_status_propagates_runner_delivery_failure(
         :param runner_router: Real app runner router, unused here.
         :returns: The fake runner client.
         """
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -9907,8 +9940,11 @@ async def test_interrupt_forward_failure_lifts_stop_fence(
     async def _fake_get_runner_client(
         session_id: str,
         runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient | None:
         """Resolve every session to the failing fake runner (or to none)."""
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return None if failure_mode == "no_runner_client" else fake_runner
 
@@ -9964,8 +10000,11 @@ async def test_interrupt_forward_success_keeps_stop_fence(
     async def _fake_get_runner_client(
         session_id: str,
         runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient:
         """Resolve every session to the accepting fake runner."""
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -11752,7 +11791,10 @@ async def test_message_forward_failure_surfaces_runner_unavailable(
     async def _fake_get_runner_client(
         session_id: str,
         runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient | None:
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -11813,7 +11855,10 @@ async def test_message_forward_rejection_surfaces_failed_with_reason(
     async def _fake_get_runner_client(
         session_id: str,
         runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient | None:
+        assert conversation is None or conversation.id == session_id
         del session_id, runner_router
         return fake_runner
 
@@ -11910,16 +11955,28 @@ async def test_create_session_notifies_runner_with_init_envelope(
     async def _fake_get_runner_client(
         _session_id: str,
         _runner_router: object,
+        *,
+        conversation: Any = None,
     ) -> httpx.AsyncClient:
+        assert conversation is None or conversation.id == _session_id
         return fake_runner
 
     monkeypatch.setattr(sessions_module, "_get_runner_client", _fake_get_runner_client)
     try:
         resp = await client.post(
             "/v1/sessions",
-            json={"agent_id": agent["id"], "model_override": "model-x"},
+            json={
+                "agent_id": agent["id"],
+                "model_override": "model-x",
+                "labels": {"test.long": "x" * 257},
+            },
         )
         assert resp.status_code == 201, f"create failed: {resp.status_code} {resp.text}"
+        created_body = resp.json()
+        assert created_body["labels"]["test.long"] == "x" * 256
+        reread = await client.get(f"/v1/sessions/{created_body['id']}")
+        assert reread.status_code == 200, reread.text
+        assert reread.json()["labels"]["test.long"] == "x" * 256
     finally:
         await fake_runner.aclose()
 
@@ -11931,6 +11988,7 @@ async def test_create_session_notifies_runner_with_init_envelope(
     )
     envelope = parse_runner_session_init_envelope(body)
     assert envelope is not None
+    assert envelope.snapshot.labels["test.long"] == "x" * 256
     assert envelope.snapshot.model_override == "model-x", (
         "the init envelope must carry the persisted /model override so the "
         "runner seeds it into the first spawn; got "

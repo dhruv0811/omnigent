@@ -411,6 +411,12 @@ class ConversationStore(ABC):
         conversation_id: str | None = None,
         project_id: str | None = None,
         inference_snapshot: dict[str, Any] | None = None,
+        labels: dict[str, str] | None = None,
+        reasoning_effort: str | None = None,
+        model_override: str | None = None,
+        cost_control_mode_override: str | None = None,
+        subagent_routing_override: str | None = None,
+        harness_override: str | None = None,
     ) -> Conversation:
         """
         Create a new conversation. Generates a unique
@@ -466,6 +472,13 @@ class ConversationStore(ABC):
         :param conversation_id: Optional caller-supplied identifier.
             ``None`` generates a new random id. Reserved for flows that
             require database-enforced idempotency.
+        :param labels: Initial conversation labels to persist with the
+            conversation.
+        :param reasoning_effort: Optional per-session reasoning effort.
+        :param model_override: Optional per-session model override.
+        :param cost_control_mode_override: Optional per-session cost-control mode.
+        :param subagent_routing_override: Optional per-session sub-agent routing mode.
+        :param harness_override: Optional per-session harness override.
         :returns: The newly created :class:`Conversation`.
         :raises NameAlreadyExistsError: If
             ``parent_conversation_id`` is not ``None`` and a

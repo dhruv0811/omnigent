@@ -644,9 +644,7 @@ async def _grant_default_public(
         and host_id is not None
         and default_public_policy(app_state) is DefaultPublicSessions.SANDBOX
     ):
-        managed = await asyncio.to_thread(
-            host_is_managed_sandbox, getattr(app_state, "host_store", None), host_id
-        )
+        managed = host_is_managed_sandbox(getattr(app_state, "host_registry", None), host_id)
     if not new_session_starts_public(app_state, managed=managed, workspace=workspace):
         return
     await asyncio.to_thread(permission_store.ensure_user, RESERVED_USER_PUBLIC)

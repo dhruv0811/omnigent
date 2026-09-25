@@ -478,58 +478,65 @@ async def test_managed_create_follows_policy(
 # ── sessions bound to an existing sandbox host ───────────────────────
 
 _SBX_HOST = "a" * 32
-_LAPTOP_HOST = "b" * 32
+# A user's own machine that reconnected on a managed host's id under ordinary
+# login: it keeps the sandbox_provider row but its live tunnel has no launch
+# token, so it must NOT count as a sandbox (the Polly finding).
+_RECONNECTED_LAPTOP = "b" * 32
 _MISSING_HOST = "c" * 32
 _BOUND_SESSION = "d" * 32
 
 
-def _host_state(db_uri: str, policy: str) -> SimpleNamespace:
-    """``app.state`` stand-in wired to a real host store."""
+class _FakeHostConn:
+    def __init__(self, registered_with_managed_token: bool) -> None:
+        self.registered_with_managed_token = registered_with_managed_token
+
+
+class _FakeHostRegistry:
+    """Only the ``get`` the sandbox classifier calls, keyed on live provenance."""
+
+    def __init__(self, sandbox_hosts: set[str]) -> None:
+        self._sandbox_hosts = sandbox_hosts
+
+    def get(self, host_id: str) -> _FakeHostConn | None:
+        # Every registered host has a live connection; only sandbox launches
+        # authenticated with a managed token.
+        if host_id in (_SBX_HOST, _RECONNECTED_LAPTOP):
+            return _FakeHostConn(host_id in self._sandbox_hosts)
+        return None
+
+
+def _host_state(policy: str) -> SimpleNamespace:
+    """``app.state`` stand-in whose registry marks only ``_SBX_HOST`` a sandbox."""
     return SimpleNamespace(
         default_public_sessions=lambda: policy,
         sharing_mode=lambda: SharingMode.ON,
         public_sharing=lambda: True,
-        host_store=HostStore(db_uri),
+        host_registry=_FakeHostRegistry(sandbox_hosts={_SBX_HOST}),
     )
-
-
-def _register_hosts(db_uri: str, permission_store: SqlAlchemyPermissionStore) -> None:
-    """Register a server-managed sandbox host and the user's own machine."""
-    permission_store.ensure_user(_USER)
-    hosts = HostStore(db_uri)
-    hosts.register_managed_host(
-        host_id=_SBX_HOST,
-        name="managed-sbx",
-        user_id=_USER,
-        token="launch-token",
-        provider="agent_sandbox",
-        sandbox_id="sandbox-1",
-        token_expires_at=4_102_444_800,
-    )
-    hosts.upsert_on_connect(_LAPTOP_HOST, "laptop", _USER)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "policy,host_id,expected_public",
     [
-        ("sandbox", _SBX_HOST, True),  # existing sandbox host counts as sandbox
-        ("sandbox", _LAPTOP_HOST, False),  # a user's own machine stays private
+        ("sandbox", _SBX_HOST, True),  # live sandbox connection counts as sandbox
+        ("sandbox", _RECONNECTED_LAPTOP, False),  # local reconnect on a managed id stays private
         ("sandbox", _MISSING_HOST, False),
         ("sandbox", None, False),
-        ("all", _LAPTOP_HOST, True),
+        ("all", _RECONNECTED_LAPTOP, True),
         ("off", _SBX_HOST, False),
     ],
 )
 async def test_existing_sandbox_host_counts_as_sandbox(
     db_uri: str, policy: str, host_id: str | None, expected_public: bool
 ) -> None:
-    """A session started on an already-running sandbox (no ``host_type=managed``)
-    follows the sandbox policy, decided from the server-owned host row."""
+    """A session started on an already-running sandbox follows the sandbox policy,
+    decided from the live connection's launch-token provenance — not a persisted
+    marker a reconnecting local machine would keep."""
     perms = SqlAlchemyPermissionStore(db_uri)
-    _register_hosts(db_uri, perms)
+    perms.ensure_user(_USER)
     await _grant_default_public(
-        _host_state(db_uri, policy),
+        _host_state(policy),
         perms,
         _BOUND_SESSION,
         managed=False,

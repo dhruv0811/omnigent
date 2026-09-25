@@ -219,17 +219,20 @@ def default_public_policy(state: Any) -> DefaultPublicSessions:
     )
 
 
-def host_is_managed_sandbox(host_store: Any, host_id: str | None) -> bool:
-    """Whether ``host_id`` is a sandbox host the server provisioned.
+def host_is_managed_sandbox(host_registry: Any, host_id: str | None) -> bool:
+    """Whether ``host_id`` is currently connected as a server-provisioned sandbox.
 
-    ``sandbox_provider`` is stamped only on server-managed hosts, so a user's own
-    machine can't claim it. Lets a session started on an already-running sandbox
-    count as a sandbox session, not just one that requested a fresh sandbox.
+    Keys on the live connection's launch-token provenance, not a persisted
+    ``sandbox_provider`` marker: an owner can reconnect their own machine on a
+    managed host's id under ordinary login, which keeps the marker but is not a
+    sandbox. A genuine sandbox proves itself with its launch token on every
+    connect. Lets a session started on an already-running sandbox count as a
+    sandbox session, not just one that requested a fresh sandbox.
     """
-    if host_store is None or host_id is None:
+    if host_registry is None or host_id is None:
         return False
-    host = host_store.get_host(host_id)
-    return host is not None and host.sandbox_provider is not None
+    conn = host_registry.get(host_id)
+    return conn is not None and bool(getattr(conn, "registered_with_managed_token", False))
 
 
 def new_session_starts_public(state: Any, *, managed: bool, workspace: str | None) -> bool:

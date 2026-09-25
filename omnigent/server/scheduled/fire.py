@@ -510,6 +510,19 @@ async def _run_fire_for_task(
             )
             return
 
+        # Default-public access is optional decoration on top of the owner
+        # grant, so a failure here must not cancel an otherwise-ready run — the
+        # session simply stays private.
+        try:
+            await _grant_default_public(deps, effective, conv.id)
+        except Exception:
+            _logger.exception(
+                "scheduled fire: default-public grant failed for task %s (session %s); "
+                "continuing with a private session",
+                task.id,
+                conv.id,
+            )
+
         try:
             await dispatch(conv, effective)
         except Exception:
@@ -874,8 +887,7 @@ async def _attach_cost_budget(deps: FireDeps, task: ScheduledTask, conversation_
 
 
 async def _grant_owner(deps: FireDeps, task: ScheduledTask, conversation_id: str) -> None:
-    """Write the LEVEL_OWNER grant so the run is visible to its owner, plus the
-    default ``__public__`` read grant when the server's policy covers the run.
+    """Write the LEVEL_OWNER grant so the run is visible to its owner.
 
     A NULL ``user_id`` (single-user / OSS) resolves to
     :data:`RESERVED_USER_LOCAL`, whose row is created on demand. A real owner's
@@ -891,21 +903,29 @@ async def _grant_owner(deps: FireDeps, task: ScheduledTask, conversation_id: str
     else:
         owner = task.user_id
     await asyncio.to_thread(deps.permission_store.grant, owner, conversation_id, LEVEL_OWNER)
+
+
+async def _grant_default_public(deps: FireDeps, task: ScheduledTask, conversation_id: str) -> None:
+    """Add the default ``__public__`` read grant when the server policy covers
+    this run. Best-effort: default-public access is not required for the run to
+    proceed, so the caller isolates any failure here rather than failing the run.
+    """
+    if deps.permission_store is None or deps.app_state is None:
+        return
     from omnigent.server.sharing_settings import (
         host_is_managed_sandbox,
         new_session_starts_public,
     )
 
-    if deps.app_state is None:
-        return
-    managed = task.execution_target == "managed_sandbox" or await asyncio.to_thread(
-        host_is_managed_sandbox, deps.host_store, task.host_id
+    managed = task.execution_target == "managed_sandbox" or host_is_managed_sandbox(
+        deps.host_registry, task.host_id
     )
-    if new_session_starts_public(deps.app_state, managed=managed, workspace=task.workspace):
-        await asyncio.to_thread(deps.permission_store.ensure_user, RESERVED_USER_PUBLIC)
-        await asyncio.to_thread(
-            deps.permission_store.grant, RESERVED_USER_PUBLIC, conversation_id, LEVEL_READ
-        )
+    if not new_session_starts_public(deps.app_state, managed=managed, workspace=task.workspace):
+        return
+    await asyncio.to_thread(deps.permission_store.ensure_user, RESERVED_USER_PUBLIC)
+    await asyncio.to_thread(
+        deps.permission_store.grant, RESERVED_USER_PUBLIC, conversation_id, LEVEL_READ
+    )
 
 
 async def _record_run(

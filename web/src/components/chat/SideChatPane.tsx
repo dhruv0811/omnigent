@@ -26,6 +26,7 @@ import { ComposerAttachments } from "@/components/ComposerAttachments";
 import { Button } from "@/components/ui/button";
 import { useChatStore, ensureConversationStreamed } from "@/store/chatStore";
 import { useConversationEntryState } from "@/hooks/useConversationEntryState";
+import { useSession } from "@/hooks/useSession";
 import { useDictationInsert } from "@/hooks/useDictationInsert";
 import { usesNativeSideChatFork } from "@/lib/sideChat";
 import { stopSession } from "@/lib/sessionsApi";
@@ -89,7 +90,7 @@ const EMPTY_STATE_BODY = "Ask a question here without affecting the main convers
 export function SideChatPane({
   childId,
   onStart,
-  readOnly = false,
+  readOnly: restoredReadOnly = false,
 }: {
   childId: string;
   onStart?: (text: string) => Promise<void>;
@@ -98,6 +99,9 @@ export function SideChatPane({
   readOnly?: boolean;
 }) {
   const pending = isPendingSideChat(childId);
+  // The server seals a side chat whose fork it found gone; honor that live.
+  const { session } = useSession(pending ? null : childId);
+  const readOnly = restoredReadOnly || session?.labels?.["omnigent.closed"] === "true";
   // Open the child's stream once (real tabs only) so it hydrates and streams
   // here. The store guards a double-bind and re-binds a failed entry, so
   // re-mounts / tab switches / retries are cheap.

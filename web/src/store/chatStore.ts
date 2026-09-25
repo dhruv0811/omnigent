@@ -2379,6 +2379,11 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
       // chat the user has since switched to. Null id (the landing composer's own
       // failure) falls back to the active conversation.
       const failTarget = postedSessionId ?? submitConversationId;
+      // A rejected send can change the session server-side (a Codex side chat is
+      // sealed when its fork is gone), so re-read its snapshot.
+      if (failTarget !== null) {
+        void queryClient?.invalidateQueries({ queryKey: ["session", failTarget] });
+      }
       const failSet = failTarget === null ? setActive : setterFor(failTarget);
       const failGet = (): ChatState =>
         failTarget === null ? get() : (setterForState(failTarget) ?? get());

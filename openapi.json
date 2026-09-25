@@ -7728,8 +7728,19 @@
         "type": "object"
       },
       "SetSharingRequest": {
-        "description": "Body for `PUT /v1/sharing`.\n\nBoth fields are optional so an admin can update either setting\nindependently; at least one must be present.",
+        "description": "Body for `PUT /v1/sharing`.\n\nEvery field is optional so an admin can update each setting\nindependently; at least one must be present.",
         "properties": {
+          "default_public_sessions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Public Sessions"
+          },
           "public_sharing": {
             "anyOf": [
               {
@@ -15150,7 +15161,7 @@
     },
     "/v1/sharing": {
       "get": {
-        "description": "Report both settings, whether each is editable here, and the tiers.",
+        "description": "Report every setting, whether each is editable here, and the options.",
         "operationId": "get_sharing_v1_sharing_get",
         "responses": {
           "200": {
@@ -15172,7 +15183,7 @@
         ]
       },
       "put": {
-        "description": "Set the sharing mode and/or public-access setting (admin only).\n\nUpdates only the fields present in the body; requires at least one.\nRejects an unknown mode value with 400 (no fail-open coercion \u2014 an admin\nsetting a value should learn about a typo). Rejects a write to a setting\nthe deployment manages itself (not file-backed) with 403.",
+        "description": "Set the sharing mode, public-access and/or default-public settings (admin only).\n\nUpdates only the fields present in the body; requires at least one.\nRejects an unknown mode value with 400 (no fail-open coercion \u2014 an admin\nsetting a value should learn about a typo). Rejects a write to a setting\nthe deployment manages itself (not file-backed) with 403.",
         "operationId": "set_sharing_v1_sharing_put",
         "requestBody": {
           "content": {

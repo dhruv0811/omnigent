@@ -4435,7 +4435,11 @@ def create_runner_app(
 
                 async def _codex_pre_launch(has_terminal: bool) -> PreLaunchResult:
                     if await _is_codex_parent_thread_child(
-                        server_client, session_id, init_context.labels
+                        server_client,
+                        session_id,
+                        init_context.envelope.snapshot
+                        if init_context.envelope is not None
+                        else None,
                     ):
                         # A /side fork or codex-spawned sub-agent is a thread in the
                         # parent's app-server; its own Codex would start a fresh,

@@ -6254,6 +6254,7 @@ async def _forward_codex_side_chat_turn(
     from omnigent.harnesses.claude_native.bridge import url_component
     from omnigent.harnesses.codex_native.side_chat import SIDE_CHAT_GONE_ERROR
     from omnigent.server.routes._sessions.common import (
+        _CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY,
         _CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY,
         _CODEX_SIDE_CHAT_GONE_LABEL_KEY,
     )
@@ -6270,8 +6271,13 @@ async def _forward_codex_side_chat_turn(
             "codex_side_thread_id": child_thread_id,
         },
     )
-    if resp.status_code == 410 and _response_error_code(resp) == SIDE_CHAT_GONE_ERROR:
+    if (
+        resp.status_code == 410
+        and _response_error_code(resp) == SIDE_CHAT_GONE_ERROR
+        and conv.labels.get(_CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY) == _SIDE_CHAT_NICKNAME
+    ):
         # Persisted: an ephemeral fork never comes back, even on the same runner.
+        # A durable codex sub-agent thread may only need resuming, so it is not sealed.
         await asyncio.to_thread(
             conversation_store.set_labels, conv.id, {_CODEX_SIDE_CHAT_GONE_LABEL_KEY: "1"}
         )

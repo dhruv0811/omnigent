@@ -81,6 +81,7 @@ from omnigent.runner.resource_registry import (
 )
 from omnigent.runner.session_init_protocol import (
     RunnerSessionInitEnvelope,
+    RunnerSessionInitSnapshot,
 )
 from omnigent.spec.types import AgentSpec
 
@@ -6704,28 +6705,35 @@ async def _codex_session_needs_runner_terminal(
 async def _is_codex_parent_thread_child(
     server_client: httpx.AsyncClient | None,
     session_id: str,
-    labels: Mapping[str, str] | None,
+    snapshot: RunnerSessionInitSnapshot | None,
 ) -> bool:
     """
     Whether a codex-native session is a thread inside its parent's app-server.
 
     A ``/side`` fork or codex-spawned sub-agent is mirrored from the parent's
     Codex, so launching a Codex of its own would start an unrelated conversation.
-    ``sys_session_send`` sub-agents lack the thread-id label and still launch.
+    ``sys_session_send`` sub-agents lack the thread-id label, and a top-level fork
+    copies the label but has no parent, so both still launch.
 
     :param server_client: The runner's Omnigent server HTTP client, or ``None``.
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
-    :param labels: Server-supplied session labels, or ``None`` on the legacy
-        init path (then read from the session snapshot).
-    :returns: ``True`` when the session carries the codex thread-id label.
+    :param snapshot: Server-supplied session snapshot, or ``None`` on the legacy
+        init path (then read from the session payload).
+    :returns: ``True`` for a child session carrying the codex thread-id label.
     """
     from omnigent.harnesses.codex_native.side_chat import CODEX_SUBAGENT_THREAD_ID_LABEL_KEY
 
-    if labels is None:
+    if snapshot is not None:
+        labels: Mapping[str, object] = snapshot.labels
+        parent_id: object = snapshot.parent_session_id
+    else:
         payload = await _session_payload_for_host_spawn_check(server_client, session_id)
-        raw = payload.get("labels") if payload is not None else None
+        if payload is None:
+            return False
+        raw = payload.get("labels")
         labels = raw if isinstance(raw, dict) else {}
-    return bool(labels.get(CODEX_SUBAGENT_THREAD_ID_LABEL_KEY))
+        parent_id = payload.get("parent_session_id")
+    return bool(parent_id) and bool(labels.get(CODEX_SUBAGENT_THREAD_ID_LABEL_KEY))
 
 
 def _codex_native_model_from_spec(agent_spec: AgentSpec | ResolvedSpec | None) -> str | None:

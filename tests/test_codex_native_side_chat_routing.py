@@ -122,6 +122,7 @@ async def test_forward_side_chat_turn_seals_child_when_fork_is_gone() -> None:
     from omnigent.harnesses.codex_native.side_chat import SIDE_CHAT_GONE_ERROR
     from omnigent.server.routes._sessions import orchestration as orch
     from omnigent.server.routes._sessions.common import (
+        _CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY,
         _CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY,
         _CODEX_SIDE_CHAT_GONE_LABEL_KEY,
     )
@@ -130,7 +131,10 @@ async def test_forward_side_chat_turn_seals_child_when_fork_is_gone() -> None:
         id="conv_side",
         parent_conversation_id="conv_parent",
         kind="sub_agent",
-        labels={_CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY: "thread_side"},
+        labels={
+            _CODEX_NATIVE_SUBAGENT_THREAD_ID_LABEL_KEY: "thread_side",
+            _CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY: "Side chat",
+        },
     )
     body = SimpleNamespace(data={"content": [{"type": "input_text", "text": "and why?"}]})
     client = _FakeRunnerClient(_FakeResp(410, {"error": SIDE_CHAT_GONE_ERROR}))
@@ -141,6 +145,13 @@ async def test_forward_side_chat_turn_seals_child_when_fork_is_gone() -> None:
 
     assert exc_info.value.code == ErrorCode.CONFLICT
     assert store.writes == [("conv_side", {_CODEX_SIDE_CHAT_GONE_LABEL_KEY: "1"})]
+
+    # A durable codex sub-agent's missing thread may only need resuming: never sealed.
+    conv.labels[_CODEX_NATIVE_SUBAGENT_NICKNAME_LABEL_KEY] = "reviewer"
+    store = _LabelStore()
+    with pytest.raises(RuntimeError):
+        await orch._forward_codex_side_chat_turn(conv, body, client, store)
+    assert store.writes == []
 
 
 def test_side_thread_gone_error_matches_only_thread_not_found() -> None:
@@ -158,25 +169,41 @@ def test_side_thread_gone_error_matches_only_thread_not_found() -> None:
 async def test_parent_thread_child_detection_skips_only_thread_children() -> None:
     from omnigent.harnesses.codex_native.side_chat import CODEX_SUBAGENT_THREAD_ID_LABEL_KEY
     from omnigent.runner.native import orchestration as native_orch
+    from omnigent.runner.session_init_protocol import RunnerSessionInitSnapshot
+
+    def _snapshot(labels: dict[str, str], parent: str | None) -> RunnerSessionInitSnapshot:
+        return RunnerSessionInitSnapshot(
+            created_at=0, updated_at=0, labels=labels, parent_session_id=parent
+        )
 
     thread_labels = {CODEX_SUBAGENT_THREAD_ID_LABEL_KEY: "thread_side"}
-    assert await native_orch._is_codex_parent_thread_child(None, "c", thread_labels) is True
+    check = native_orch._is_codex_parent_thread_child
+    assert await check(None, "c", _snapshot(thread_labels, "conv_parent")) is True
     # A sys_session_send codex sub-agent has no thread label and must still launch.
-    assert await native_orch._is_codex_parent_thread_child(None, "c", {}) is False
+    assert await check(None, "c", _snapshot({}, "conv_parent")) is False
+    # A top-level fork copies the label but has no parent to own the thread.
+    assert await check(None, "c", _snapshot(thread_labels, None)) is False
 
 
 @pytest.mark.asyncio
-async def test_parent_thread_child_detection_reads_snapshot_on_legacy_init(
+async def test_parent_thread_child_detection_reads_payload_on_legacy_init(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from omnigent.harnesses.codex_native.side_chat import CODEX_SUBAGENT_THREAD_ID_LABEL_KEY
     from omnigent.runner.native import orchestration as native_orch
 
+    payload: _JsonObject = {
+        "labels": {CODEX_SUBAGENT_THREAD_ID_LABEL_KEY: "thread_side"},
+        "parent_session_id": "conv_parent",
+    }
+
     async def _payload(_client: object, _session_id: str) -> _JsonObject:
-        return {"labels": {CODEX_SUBAGENT_THREAD_ID_LABEL_KEY: "thread_side"}}
+        return payload
 
     monkeypatch.setattr(native_orch, "_session_payload_for_host_spawn_check", _payload)
     assert await native_orch._is_codex_parent_thread_child(None, "c", None) is True
+    payload["parent_session_id"] = None
+    assert await native_orch._is_codex_parent_thread_child(None, "c", None) is False
 
 
 @pytest.mark.asyncio

@@ -912,6 +912,25 @@ def _populate_codex_skills(
 
     for name, skill_dir in selected.items():
         link_path = target_dir / name
+        if not copy_skills and link_path.is_symlink():
+            try:
+                source = skill_dir.resolve()
+                if link_path.readlink() != source:
+                    # Persistent native homes can outlive a materialized bundle.
+                    with tempfile.TemporaryDirectory(
+                        prefix=".omnigent-skill-", dir=target_dir
+                    ) as tmp:
+                        replacement = Path(tmp) / name
+                        link_codex_skills_dir(replacement, source)
+                        replacement.replace(link_path)
+            except OSError as exc:
+                logger.warning(
+                    "could not refresh skill %r in %s (%s); keeping existing link",
+                    name,
+                    target_dir,
+                    exc,
+                )
+            continue
         if link_path.exists() or link_path.is_symlink():
             continue
         keep_link = _is_linked_skill_dir(skill_dir)

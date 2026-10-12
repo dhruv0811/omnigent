@@ -3237,6 +3237,70 @@ def test_populate_codex_skills_all(tmp_path: Path) -> None:
     assert all((target / name).is_symlink() for name in ["alpha", "beta", "gamma"])
 
 
+@pytest.mark.parametrize("remove_old_source", [False, True])
+def test_populate_codex_skills_refreshes_relocated_source(
+    tmp_path: Path, remove_old_source: bool
+) -> None:
+    """A persistent home follows a rematerialized bundle on its next launch."""
+    from omnigent.inner.codex_executor import _populate_codex_skills
+
+    old = _make_skill_dir(tmp_path / "old-bundle", "alpha")
+    new = _make_skill_dir(tmp_path / "new-bundle", "alpha")
+    (new / "SKILL.md").write_text("updated skill")
+    target = tmp_path / "codex-home" / "skills"
+    _populate_codex_skills(target, "all", [old.parent])
+    if remove_old_source:
+        (old / "SKILL.md").unlink()
+        old.rmdir()
+        old.parent.rmdir()
+
+    _populate_codex_skills(target, "all", [new.parent])
+
+    assert (target / "alpha").is_symlink()
+    assert (target / "alpha").resolve() == new
+    assert (target / "alpha" / "SKILL.md").read_text() == "updated skill"
+    assert sorted(path.name for path in target.iterdir()) == ["alpha"]
+
+
+def test_populate_codex_skills_preserves_link_when_refresh_fails(tmp_path: Path) -> None:
+    """A failed refresh retains the readable skill and removes temporary entries."""
+    from omnigent.inner.codex_executor import _populate_codex_skills
+
+    old = _make_skill_dir(tmp_path / "old-bundle", "alpha")
+    new = _make_skill_dir(tmp_path / "new-bundle", "alpha")
+    target = tmp_path / "codex-home" / "skills"
+    _populate_codex_skills(target, "all", [old.parent])
+
+    with patch("omnigent.inner.codex_executor.os.replace", side_effect=OSError("replace failed")):
+        _populate_codex_skills(target, "all", [new.parent])
+
+    assert (target / "alpha").is_symlink()
+    assert (target / "alpha").resolve() == old
+    assert (target / "alpha" / "SKILL.md").read_text() == (old / "SKILL.md").read_text()
+    assert sorted(path.name for path in target.iterdir()) == ["alpha"]
+
+
+def test_populate_codex_skills_preserves_current_link_and_local_directory(tmp_path: Path) -> None:
+    """Refreshing a home leaves current links and independently installed skills alone."""
+    from omnigent.inner.codex_executor import _populate_codex_skills
+
+    source = tmp_path / "bundle"
+    alpha = _make_skill_dir(source, "alpha")
+    _make_skill_dir(source, "beta")
+    target = tmp_path / "codex-home" / "skills"
+    local = _make_skill_dir(target, "beta")
+    (local / "SKILL.md").write_text("locally installed skill")
+    _populate_codex_skills(target, "all", [source])
+    inode = (target / "alpha").lstat().st_ino
+
+    _populate_codex_skills(target, "all", [source])
+
+    assert (target / "alpha").lstat().st_ino == inode
+    assert (target / "alpha").resolve() == alpha
+    assert not local.is_symlink()
+    assert (local / "SKILL.md").read_text() == "locally installed skill"
+
+
 def test_populate_codex_skills_none(tmp_path: Path) -> None:
     """``skills_filter='none'`` leaves the target dir absent
     entirely.

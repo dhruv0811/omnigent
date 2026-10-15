@@ -13,7 +13,10 @@ function wrapper({ children }: PropsWithChildren) {
   return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
-type Row = { id: string; labels?: Record<string, string> };
+interface Row {
+  id: string;
+  labels?: Record<string, string>;
+}
 
 /** Serve the parent's side chats from the server, newest first. */
 function serverSideChats(rows: Row[], children: Row[] = []) {
